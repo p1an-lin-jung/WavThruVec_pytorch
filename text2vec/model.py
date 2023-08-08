@@ -9,7 +9,10 @@ from module import LengthRegulator, CBHG,ConvAttention
 import Constants
 import utils
 from ecapa_tdnn_TaoRuijie import ECAPA_TDNN
+from alignment import mas_width1 as mas
 import pdb
+
+
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -115,9 +118,9 @@ class Encoder(nn.Module):
 
         if hp.use_multi_speaker_condition:
             spk_emb=self.speaker_encoder(wav_feat.transpose(1,2))# [batch_sz,192]
-            spk_emb=spk_emb.unsqueeze(1)## [batch_sz,1,192]
-            spk_emb = spk_emb.repeat(1, enc_output.size(1), 1)# [bsz,src_seq_len,192]
-            enc_output=torch.cat((enc_output,spk_emb),dim=2)# [bsz,src_seq_len,text_dim+spk_dim(192+256=448)]
+            spk_emb_repeat=spk_emb.unsqueeze(1)## [batch_sz,1,192]
+            spk_emb_repeat = spk_emb_repeat.repeat(1, enc_output.size(1), 1)# [bsz,src_seq_len,192]
+            enc_output=torch.cat((enc_output,spk_emb_repeat),dim=2)# [bsz,src_seq_len,text_dim+spk_dim(192+256=448)]
 
 
         for enc_layer in self.layer_stack:
@@ -138,8 +141,7 @@ class Decoder(nn.Module):
                  len_max_seq=hp.max_seq_len,
                  n_layers=hp.decoder_n_layer,
                  n_head=hp.decoder_head,
-                 d_k=hp.decoder_dim // hp.decoder_head,
-                 d_v=hp.decoder_dim // hp.decoder_head,
+
                  d_model=hp.decoder_dim,
                  d_inner=hp.decoder_conv1d_filter_size,
                  dropout=hp.dropout):
@@ -148,10 +150,15 @@ class Decoder(nn.Module):
 
         n_position = len_max_seq + 1
 
+        if hp.use_multi_speaker_condition:
+            d_model+=hp.n_speaker_dim
+
         self.position_enc = nn.Embedding.from_pretrained(
             get_sinusoid_encoding_table(n_position, d_model, padding_idx=0),
             freeze=True)
 
+        d_k = d_model // hp.encoder_head
+        d_v = d_model // hp.encoder_head
         self.layer_stack = nn.ModuleList([FFTBlock(
             d_model, d_inner, n_head, d_k, d_v, dropout=dropout) for _ in range(n_layers)])
 
@@ -187,7 +194,12 @@ class Text2Vec(nn.Module):
         self.length_regulator = LengthRegulator()
         self.decoder = Decoder()
 
-        self.mel_linear = Linear(hp.decoder_dim, hp.n_feat_dim)
+        if hp.use_multi_speaker_condition:
+            self.mel_linear = Linear(hp.decoder_dim+hp.n_speaker_dim, hp.n_feat_dim)
+        else:
+            self.mel_linear = Linear(hp.decoder_dim, hp.n_feat_dim)
+
+
         self.postnet = CBHG(hp.n_feat_dim, K=8,
                             projections=[256, hp.n_feat_dim])
         self.last_linear = Linear(hp.n_feat_dim * 2, hp.n_feat_dim)
@@ -216,10 +228,30 @@ class Text2Vec(nn.Module):
         Args:
             hard_attn (torch.Tensor): [b x len_text x len_feat]
         """
-        return torch.sum(hard_attn,dim=2)
+        return torch.sum(hard_attn,dim=2).int()
 
-    def get_attn_and_duration(self,wav_feat,in_lens,out_lens,text_embeddings,speaker_vecs,attn_prior,
-                          binarize_attention=False):
+    def binarize_attention(self, attn, in_lens, out_lens):
+        """For training purposes only. Binarizes attention with MAS. These will
+        no longer recieve a gradient
+        Args:
+            attn: B x 1 x max_mel_len x max_text_len
+        """
+        b_size = attn.shape[0]
+        with torch.no_grad():
+            attn_cpu = attn.data.cpu().numpy()
+            attn_out = torch.zeros_like(attn)
+            for ind in range(b_size):
+                hard_attn = mas(attn_cpu[ind, 0, :out_lens[ind], :in_lens[ind]])
+                attn_out[ind, 0, :out_lens[ind], :in_lens[ind]] = torch.tensor(
+                    hard_attn, device=attn.get_device())  # bsz,1,len_text,len_mel
+        return attn_out
+
+    def get_attn_and_duration(self,
+                              wav_feat,
+                              in_lens,out_lens,
+                              text_embeddings,
+                              speaker_vecs,attn_prior,
+                              binarize_attention=True):
         # ====ref to rad-tts
 
         # text_embeddings: b x len_text x n_text_dim [512, 125]
@@ -230,7 +262,7 @@ class Text2Vec(nn.Module):
         # make sure to do the alignments before folding
         attn_mask = get_mask_from_lengths(in_lens)[..., None] == 0
 
-        pdb.set_trace()
+
         text_embeddings_for_attn = text_embeddings
         if self.use_speaker_emb_for_alignment:
             speaker_vecs_expd = speaker_vecs[:, :, None].expand(
@@ -238,16 +270,16 @@ class Text2Vec(nn.Module):
             text_embeddings_for_attn = torch.cat(
                 (text_embeddings_for_attn, speaker_vecs_expd.detach()), 1)
 
-        # attn_mask shld be 1 for unsd t-steps in text_enc_w_spkvec tensor
         attn_soft, attn_logprob = self.attention(
-            wav_feat, text_embeddings_for_attn, out_lens, attn_mask,
+            wav_feat.transpose(1,2), # switch  frame-dim and channel-dim
+            text_embeddings_for_attn,
+            out_lens,
+            attn_mask,
             key_lens=in_lens, attn_prior=attn_prior)
 
         if binarize_attention:
             attn = self.binarize_attention(attn_soft, in_lens, out_lens)
             attn_hard = attn
-            if self.attn_straight_through_estimator:
-                attn_hard = attn_soft + (attn_hard - attn_soft).detach()
         else:
             attn = attn_soft
 
@@ -258,27 +290,25 @@ class Text2Vec(nn.Module):
 
     def forward(self, wav_feat,src_seq, src_pos,in_lens, out_lens
                 ,mel_pos=None, mel_max_length=None, alpha=1.0,
-                binarize_attention=False,attn_prior=None):
+                binarize_attention=True,attn_prior=None):
 
         encoder_output, _,text_embeddings,speaker_vecs = self.encoder(src_seq, src_pos,wav_feat)
 
         # train soft-alignment,and convert to hard-alignment and duration(as length_regulator's target)
-        attn,attn_soft,duration=self.get_attn_and_duration(wav_feat,
+        attn_hard,attn_soft,duration=self.get_attn_and_duration(wav_feat,
                                    in_lens,
                                    out_lens,
                                    text_embeddings,
                                    speaker_vecs,
-                                   attn_prior,binarize_attention=False)
-
+                                   attn_prior,
+                                   binarize_attention=binarize_attention)
 
         if self.training:
             length_regulator_output, duration_predictor_output = self.length_regulator(encoder_output,
-                                                                                       target=duration,
-                                                                                       alpha=alpha,
+                                                                                       attn=attn_hard,
                                                                                        mel_max_length=mel_max_length)
 
-            decoder_output = self.decoder(length_regulator_output, mel_pos)
-
+            decoder_output = self.decoder(length_regulator_output, mel_pos) #torch.Size([16, 431, 448])
             mel_output = self.mel_linear(decoder_output)
             mel_output = self.mask_tensor(mel_output, mel_pos, mel_max_length)
             residual = self.postnet(mel_output)
@@ -293,10 +323,10 @@ class Text2Vec(nn.Module):
                 'feat_postnet_output':mel_postnet_output,
                 'duration_predictor_output':duration_predictor_output,
                 'duration':duration,
-                'attn':attn,
+                'attn':attn_hard,
                 'attn_soft':attn_soft
             }
-            return
+            return output
         else:
             length_regulator_output, decoder_pos = self.length_regulator(encoder_output,
                                                                          alpha=alpha)
@@ -308,7 +338,15 @@ class Text2Vec(nn.Module):
             residual = self.last_linear(residual)
             mel_postnet_output = mel_output + residual
 
-            return mel_output, mel_postnet_output
+            output = {
+                'feat_output': mel_output,
+                'feat_postnet_output': mel_postnet_output,
+                # 'duration_predictor_output': duration_predictor_output,
+                'duration': duration,
+                'attn': attn_hard,
+                'attn_soft': attn_soft
+            }
+            return output
 
 
 

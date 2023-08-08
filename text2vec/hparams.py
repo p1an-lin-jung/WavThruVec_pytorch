@@ -76,7 +76,7 @@ clear_Time = 20
 batch_expand_size = 16
 
 # attn training , according to rad-tts
-binarization_start_iter=6000
+binarization_start_iter=0 # must be 0
 kl_loss_start_iter= 18000
 learn_alignments=True
 binarization_loss_weight=1.0

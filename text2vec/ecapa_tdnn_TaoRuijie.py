@@ -162,7 +162,7 @@ class ECAPA_TDNN(nn.Module):
             nn.Softmax(dim=2),
         )
         self.bn5 = nn.BatchNorm1d(3072)
-        self.fc6 = nn.Linear(3072, hp.n_speaker_dim)
+        self.fc6 = nn.Linear(3072, hp.n_speaker_dim) # 192
         self.bn6 = nn.BatchNorm1d(hp.n_speaker_dim)
 
 

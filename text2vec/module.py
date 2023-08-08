@@ -1,3 +1,5 @@
+import pdb
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -39,7 +41,7 @@ def clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
 
 
-# @jit(nopython=True)
+# convert duration to alignment
 def create_alignment(base_mat, duration_predictor_output):
     N, L = duration_predictor_output.shape
     for i in range(N):
@@ -58,36 +60,43 @@ class LengthRegulator(nn.Module):
         super(LengthRegulator, self).__init__()
         self.duration_predictor = DurationPredictor()
 
-    def LR(self, x, duration_predictor_output, mel_max_length=None):
-        expand_max_len = torch.max(
-            torch.sum(duration_predictor_output, -1), -1)[0]
-        alignment = torch.zeros(duration_predictor_output.size(0),
-                                expand_max_len,
-                                duration_predictor_output.size(1)).numpy()
-        alignment = create_alignment(alignment,
-                                     duration_predictor_output.cpu().numpy())
-        alignment = torch.from_numpy(alignment).to(device)
+    def LR(self, x, attn_hard,mel_max_length=None):
+        # duration_predictor_output
+        # expand_max_len = torch.max(
+        #     torch.sum(duration_predictor_output, -1), -1)[0]#### todo check
+        # alignment = torch.zeros(duration_predictor_output.size(0),
+        #                         int(expand_max_len),
+        #                         duration_predictor_output.size(1)).numpy()###
+        # alignment = create_alignment(alignment,
+        #                              duration_predictor_output.cpu().detach().numpy())
+        # alignment = torch.from_numpy(alignment).to(device)
 
-        output = alignment @ x # 矩阵乘法，类似dot，numpy的一维向量默认都是列向量
+        alignment=attn_hard.squeeze()# [batch_sz,1,len_feat,len_text]->[batch_sz, len_feat,len_text]
+        output = alignment @ x
         if mel_max_length:
             output = F.pad(
                 output, (0, 0, 0, mel_max_length-output.size(1), 0, 0))
         return output
+    #
+    def forward(self, x, alpha=1.0,target=None, attn=None,mel_max_length=None):
 
-    def forward(self, x, alpha=1.0, target=None, mel_max_length=None):
         duration_predictor_output = self.duration_predictor(x)
 
-        if target is not None:
-            output = self.LR(x, target, mel_max_length=mel_max_length)
-            return output, duration_predictor_output
-        else:
-            duration_predictor_output = (
-                (duration_predictor_output + 0.5) * alpha).int()
-            output = self.LR(x, duration_predictor_output)
-            mel_pos = torch.stack(
-                [torch.Tensor([i+1 for i in range(output.size(1))])]).long().to(device)
 
-            return output, mel_pos
+        if attn is not None:
+            output = self.LR(x,attn,mel_max_length=mel_max_length)
+            return output, duration_predictor_output
+        # else:
+        #     # not use
+        #     duration_predictor_output = (
+        #         (duration_predictor_output + 0.5) * alpha).int()
+        #     output = self.LR(x, duration_predictor_output)
+        #     mel_pos = torch.stack(
+        #         [torch.Tensor([i+1 for i in range(output.size(1))])]).long().to(device)
+        #
+        #     return output, mel_pos
+
+        return None
 
 
 class DurationPredictor(nn.Module):
@@ -96,7 +105,9 @@ class DurationPredictor(nn.Module):
     def __init__(self):
         super(DurationPredictor, self).__init__()
 
-        self.input_size = hp.encoder_dim
+        self.input_size = hp.encoder_dim #
+        if hp.use_multi_speaker_condition:
+            self.input_size += hp.n_speaker_dim
         self.filter_size = hp.duration_predictor_filter_size
         self.kernel = hp.duration_predictor_kernel_size
         self.conv_output_size = hp.duration_predictor_filter_size
