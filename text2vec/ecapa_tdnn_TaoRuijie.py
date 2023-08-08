@@ -166,7 +166,7 @@ class ECAPA_TDNN(nn.Module):
         self.bn6 = nn.BatchNorm1d(hp.n_speaker_dim)
 
 
-    def forward(self, x, aug):
+    def forward(self, x, aug=False):
 
         # for vec2wav, else for text2vec
         if self.input_wav:

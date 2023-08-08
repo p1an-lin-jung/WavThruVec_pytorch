@@ -9,6 +9,7 @@ from module import LengthRegulator, CBHG,ConvAttention
 import Constants
 import utils
 from ecapa_tdnn_TaoRuijie import ECAPA_TDNN
+import pdb
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -73,10 +74,8 @@ class Encoder(nn.Module):
                  d_word_vec=hp.encoder_dim,  # 256
                  n_layers=hp.encoder_n_layer,
                  n_head=hp.encoder_head,
-                 d_k=hp.encoder_dim // hp.encoder_head,
-                 d_v=hp.encoder_dim // hp.encoder_head,
                  d_model=hp.encoder_dim,
-                 d_inner=hp.encoder_conv1d_filter_size,
+                 d_inner=hp.encoder_conv1d_filter_size,#1024
                  dropout=hp.dropout):
 
         super(Encoder, self).__init__()
@@ -91,12 +90,17 @@ class Encoder(nn.Module):
             get_sinusoid_encoding_table(n_position, d_word_vec, padding_idx=0),
             freeze=True)
 
-        self.speaker_encoder=ECAPA_TDNN(hp.spk_channel,input_wav=hp.input_wav,n_feat_dim=hp.n_feat_dim)
+        if hp.use_multi_speaker_condition:
+            self.speaker_encoder=ECAPA_TDNN(hp.spk_channel,input_wav=hp.input_wav,n_feat_dim=hp.n_feat_dim)
+            d_model+=hp.n_speaker_dim
 
+        d_k=d_model // hp.encoder_head
+        d_v=d_model // hp.encoder_head
         self.layer_stack = nn.ModuleList([FFTBlock(
             d_model, d_inner, n_head, d_k, d_v, dropout=dropout) for _ in range(n_layers)])
 
     def forward(self, src_seq, src_pos, wav_feat,return_attns=False):
+
 
         enc_slf_attn_list = []
 
@@ -106,12 +110,15 @@ class Encoder(nn.Module):
 
         # -- Forward
 
-        text_emb=self.src_word_emb(src_seq)
+        text_emb=self.src_word_emb(src_seq) # [bsz,src_seq_len,text_dim(256)]
         enc_output = text_emb + self.position_enc(src_pos) #[batch_sz，src_seq_len，encoder_dim])
-        spk_emb=self.speaker_encoder(wav_feat)# [batch_sz,192]
-        spk_emb=spk_emb.unsqueeze(1)## [batch_sz,1,192]
-        spk_emb = spk_emb.repeat(1, enc_output.size(1), 1)# []
-        enc_output=torch.cat((enc_output,spk_emb),dim=2)#
+
+        if hp.use_multi_speaker_condition:
+            spk_emb=self.speaker_encoder(wav_feat.transpose(1,2))# [batch_sz,192]
+            spk_emb=spk_emb.unsqueeze(1)## [batch_sz,1,192]
+            spk_emb = spk_emb.repeat(1, enc_output.size(1), 1)# [bsz,src_seq_len,192]
+            enc_output=torch.cat((enc_output,spk_emb),dim=2)# [bsz,src_seq_len,text_dim+spk_dim(192+256=448)]
+
 
         for enc_layer in self.layer_stack:
             enc_output, enc_slf_attn = enc_layer(
@@ -121,7 +128,7 @@ class Encoder(nn.Module):
             if return_attns:
                 enc_slf_attn_list += [enc_slf_attn]
 
-        return enc_output, non_pad_mask, text_emb,spk_emb
+        return enc_output, non_pad_mask, text_emb, spk_emb
 
 
 class Decoder(nn.Module):
@@ -187,6 +194,7 @@ class Text2Vec(nn.Module):
 
 
         self.learn_alignments=hp.learn_alignments # temp
+        self.use_speaker_emb_for_alignment=hp.use_speaker_emb_for_alignment
         if self.learn_alignments:
             if self.use_speaker_emb_for_alignment:
                 # n_feat_dim=768, that is the wav2vec's output shape
@@ -222,7 +230,7 @@ class Text2Vec(nn.Module):
         # make sure to do the alignments before folding
         attn_mask = get_mask_from_lengths(in_lens)[..., None] == 0
 
-        # 是否加入spk emb，是，就做拼接
+        pdb.set_trace()
         text_embeddings_for_attn = text_embeddings
         if self.use_speaker_emb_for_alignment:
             speaker_vecs_expd = speaker_vecs[:, :, None].expand(
@@ -231,7 +239,6 @@ class Text2Vec(nn.Module):
                 (text_embeddings_for_attn, speaker_vecs_expd.detach()), 1)
 
         # attn_mask shld be 1 for unsd t-steps in text_enc_w_spkvec tensor
-
         attn_soft, attn_logprob = self.attention(
             wav_feat, text_embeddings_for_attn, out_lens, attn_mask,
             key_lens=in_lens, attn_prior=attn_prior)

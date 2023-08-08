@@ -88,7 +88,7 @@ def pad_2D_tensor(inputs, maxlen=None):
             raise ValueError("not max_len")
 
         s = x.size(1)
-        x_padded = F.pad(x, (0, 0, 0, max_len-x.size(0)))
+        x_padded = F.pad(x, (0, 0, 0, max_len-x.size(0))) #
         return x_padded[:, :s]
 
     if maxlen:

@@ -33,11 +33,12 @@ def beta_binomial_prior_distribution(phoneme_count, mel_count,
         rv = betabinom(P - 1, a, b)
         mel_i_prob = rv.pmf(x)
         mel_text_probs.append(mel_i_prob)
-    return torch.tensor(np.array(mel_text_probs))
+    return torch.tensor(np.array(mel_text_probs))#[len_text,n_frame]
 
 
 def get_attention_prior(n_tokens, n_frames):
     # cache the entire attn_prior by filename
+    os.makedirs(hp.betabinom_cache_path,exist_ok=True)
     if hp.use_attn_prior_masking:
         filename = "{}_{}".format(n_tokens, n_frames)
         prior_path = os.path.join(hp.betabinom_cache_path, filename)
@@ -71,6 +72,7 @@ def get_data_to_buffer(file_path):
     buffer = list()
     text = process_text(file_path)
 
+
     start = time.perf_counter()
     for line in tqdm(text):
         npy_file,character,spk=line.strip().split('|')
@@ -79,21 +81,20 @@ def get_data_to_buffer(file_path):
         feat_gt_target = np.load(feat_gt_name)
 
 
-        character = np.array(
-            text_to_sequence(character, hp.text_cleaners))
+        text_enc = np.array(
+            text_to_sequence(character))
 
-        character = torch.from_numpy(character)
+        text_enc = torch.from_numpy(text_enc)
 
-
-        feat_gt_target = torch.from_numpy(feat_gt_target).transpose(1,2)
+        feat_gt_target = torch.from_numpy(feat_gt_target).squeeze() # [1,n_frame,n_channel]->[n_frame,n_channel]
 
         attn_prior = get_attention_prior(
-            character.shape[0], feat_gt_target.shape[1])
+            text_enc.shape[0], feat_gt_target.shape[0])
 
         if not hp.use_attn_prior_masking:
             attn_prior = None
 
-        buffer.append({"text": character,
+        buffer.append({"text_enc": text_enc,
                        "feat_gt_target": feat_gt_target,
                        "audiopath":feat_gt_name,
                        "attn_prior":attn_prior
@@ -120,7 +121,10 @@ class BufferDataset(Dataset):
 
 
 def reprocess_tensor(batch, cut_list):
-    texts = [batch[ind]["text"] for ind in cut_list]
+    import pdb
+    # pdb.set_trace()
+
+    texts = [batch[ind]["text_enc"] for ind in cut_list]
     feat_gt_targets = [batch[ind]["feat_gt_target"] for ind in cut_list]
 
 
@@ -135,9 +139,11 @@ def reprocess_tensor(batch, cut_list):
                               (0, max_len - int(length_src_row)), 'constant'))
     src_pos = torch.from_numpy(np.array(src_pos))
 
+
+
     length_feat = np.array(list())
     for feat in feat_gt_targets:
-        length_feat = np.append(length_feat, feat_gt_targets.size(0))
+        length_feat = np.append(length_feat, feat.size(0))# [n_frame,n_channel]
 
     feat_pos = list()
     max_feat_len = int(max(length_feat))
@@ -146,55 +152,59 @@ def reprocess_tensor(batch, cut_list):
                               (0, max_feat_len - int(length_feat_row)), 'constant'))
     feat_pos = torch.from_numpy(np.array(feat_pos))
 
+    # pdb.set_trace()
 
-
-    input_lengths, ids_sorted_decreasing = torch.sort(
-        torch.LongTensor([len(x['text']) for x in batch]),
+    input_lengths, _ = torch.sort(
+        torch.LongTensor([len(batch[ind]['text_enc']) for ind in cut_list]),
         dim=0, descending=True)
 
-    # Right zero-pad
-    num_W2V_channels = batch[0]['feat_gt_target'].size(0)
-    W2V_target_len = max([x['feat_gt_target'].size(1) for x in batch])
+    max_input_len = input_lengths[0]
 
-    W2V_padded = torch.FloatTensor(len(batch), num_W2V_channels, W2V_target_len)
-    W2V_padded.zero_()
-
-    output_lengths = torch.LongTensor(len(batch))
+    attn_prior_padded = torch.FloatTensor(len(cut_list), max_feat_len, max_input_len)# [bz,n_feat,n_txt]
+    attn_prior_padded.zero_()
+    output_lengths = torch.LongTensor(len(cut_list))
     audiopaths = []
 
-    for i in range(len(ids_sorted_decreasing)):
-        W2V = batch[ids_sorted_decreasing[i]]['feat_gt_target']
-        W2V_padded[i, :, :W2V.size(1)] = W2V
+    for i in range(len(input_lengths)):
+        ind=cut_list[i]
+        W2V = batch[ind]['feat_gt_target']
 
-        output_lengths[i] = W2V.size(1)
-        audiopath = batch[ids_sorted_decreasing[i]]['audiopath']
+        output_lengths[i] = W2V.size(0)#
+        audiopath = batch[ind]['audiopath']
         audiopaths.append(audiopath)
 
-        cur_attn_prior = batch[ids_sorted_decreasing[i]]['attn_prior']
+        cur_attn_prior = batch[ind]['attn_prior']
         if cur_attn_prior is None:
             attn_prior_padded = None
         else:
-            attn_prior_padded[i, :cur_attn_prior.size(0), :cur_attn_prior.size(1)] = cur_attn_prior
+            try:
+                attn_prior_padded[i, :cur_attn_prior.size(0), :cur_attn_prior.size(1)] = cur_attn_prior
+            except:
+                print(cur_attn_prior.shape)
+                print(attn_prior_padded[i].shape)
 
     texts = pad_1D_tensor(texts)
     feat_gt_targets = pad_2D_tensor(feat_gt_targets)  # []
-    out = {"text": texts,
-           "feat_target": feat_gt_targets,
-           "input_lengths":input_lengths,
-           "output_lengths":output_lengths,
-           "feat_pos": feat_pos,
-           "src_pos": src_pos,
-           "feat_max_len": max_feat_len,
-           "attn_prior":attn_prior_padded,
-           'audiopaths': audiopaths,
+
+    # p texts:
+    # p text_padded:
+    out = {"text": texts, # [bsz,n_text]
+           "feat_target": feat_gt_targets,# [bsz,n_frame,n_feat(768)]
+           "input_lengths":input_lengths, # [bsz],the text-enc length
+           "output_lengths":output_lengths,# [bsz],the w2v_feat length
+           "feat_pos": feat_pos,# [bsz,max_feat_len]
+           "src_pos": src_pos,# [bsz,max_input_len]
+           "feat_max_len": max_feat_len,# int
+           "attn_prior":attn_prior_padded,#[bsz,max_feat_len,max_input_len]
+           'audiopaths': audiopaths,#[16]
            }
 
     return out
 
 
 def collate_fn_tensor(batch):
-    len_arr = np.array([d["text"].size(0) for d in batch])
-    index_arr = np.argsort(-len_arr)
+    len_arr = np.array([d["text_enc"].size(0) for d in batch])
+    index_arr = np.argsort(-len_arr) # 已经按text 长度排序
     batchsize = len(batch)
     real_batchsize = batchsize // hp.batch_expand_size
 

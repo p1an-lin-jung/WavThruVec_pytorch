@@ -34,7 +34,7 @@ model = Wav2Vec2Model.from_pretrained(model_path)
 # model = Wav2Vec2ForPreTraining.from_pretrained(model_path)
 
 model = model.to(device)
-model = model.half()
+# model = model.half()
 model.eval()
 
 
@@ -56,45 +56,45 @@ with open(label_file_path,'r',encoding='utf-8')as f:
     # fw.close()
 
 
-# with open(enc_filelist_path,'w',encoding='utf-8')as fw:
-#
-#     for spk in os.listdir(wavs_path)[:20]:
-#         spk_path=os.path.join(wavs_path,spk)  #/data_mnt/aishell3/train/wav
-#         out_spk_path=os.path.join(feat_output_path,spk) # /data_mnt/aishell3/w2v_feat/train/SSB0005
-#
-#         os.makedirs(out_spk_path,exist_ok=True)
-#
-#         for _wav in os.listdir(spk_path)[:20]:
-#
-#             file_path=os.path.join(spk_path,_wav) #/data_mnt/aishell3/train/wav/SSB0005/file.wav
-#
-#             # wav, sr = sf.read(wav_path)
-#             wav,sr=librosa.load(file_path,sr=16000)
-#             input_values = feature_extractor(wav, return_tensors="pt",sampling_rate = sr).input_values
-#             input_values = input_values.half()
-#             input_values = input_values.to(device)
-#
-#             with torch.no_grad():
-#                 outputs = model(input_values)
-#                 last_hidden_state = outputs.last_hidden_state
-#                 npy_file_name=_wav[:-4]+'.npy'
-#
-#                 same_suffix=os.path.join(spk,npy_file_name)
-#                 np_path=os.path.join(feat_output_path,same_suffix) #/data_mnt/aishell3/w2v_feat/train/SSB0005/file.wav
-#                 np.save(np_path ,last_hidden_state.cpu().numpy())
-#                 print("shape:",last_hidden_state.shape)
-#                 print("{}|{}|{}".format(same_suffix,label_dict[_wav],spk),file=fw)
-#
-#     print(last_hidden_state)
+with open(enc_filelist_path,'w',encoding='utf-8')as fw:
+
+    for spk in os.listdir(wavs_path)[:15]:# only take 15 spk, as an example
+        spk_path=os.path.join(wavs_path,spk)  #/data_mnt/aishell3/train/wav
+        out_spk_path=os.path.join(feat_output_path,spk) # /data_mnt/aishell3/w2v_feat/train/SSB0005
+
+        os.makedirs(out_spk_path,exist_ok=True)
+
+        for _wav in os.listdir(spk_path)[:20]: # only take 15 file, as an example
+
+            file_path=os.path.join(spk_path,_wav) #/data_mnt/aishell3/train/wav/SSB0005/file.wav
+
+            # wav, sr = sf.read(wav_path)
+            wav,sr=librosa.load(file_path,sr=16000)
+            input_values = feature_extractor(wav, return_tensors="pt",sampling_rate = sr).input_values
+            # input_values = input_values.half()
+            input_values = input_values.to(device)
+
+            with torch.no_grad():
+                outputs = model(input_values)
+                last_hidden_state = outputs.last_hidden_state
+                npy_file_name=_wav[:-4]+'.npy'
+
+                same_suffix=os.path.join(spk,npy_file_name)
+                np_path=os.path.join(feat_output_path,same_suffix) #/data_mnt/aishell3/w2v_feat/train/SSB0005/file.wav
+                np.save(np_path ,last_hidden_state.cpu().numpy())
+                print("shape:",last_hidden_state.shape)
+                print("{}|{}|{}".format(same_suffix,label_dict[_wav],spk),file=fw)
+
+    print(last_hidden_state)
 
 
 vocab_path='./data/vocab.txt'
 def build_vocab(vocab_path,label_dict):
-    # vocab = "PE abcdefghijklmnopqrstuvwxyz0123456789.?"
+    simple_vocab = "PE abcdefghijklmnopqrstuvwxyz0123456789.?"
     char_dict=set()
-    char_dict.add('P')# pad
-    char_dict.add('E')# end
-    char_dict.add(' ')
+
+    for ch in simple_vocab:
+        char_dict.add(ch)
 
     for k,v in label_dict.items():
         for ch in v:

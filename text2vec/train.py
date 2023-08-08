@@ -18,9 +18,27 @@ import hparams as hp
 import utils
 from loss import  AttentionBinarizationLoss
 from torch_optimizer import Lamb
+from torch.utils.tensorboard import SummaryWriter
 
+def prepare_output_folders_and_logger(output_directory):
+    # Get shared output_directory ready
+    if not os.path.isdir(output_directory):
+        os.makedirs(output_directory)
+        os.chmod(output_directory, 0o775)
+        print("output directory", output_directory)
+
+    output_hparams_path = os.path.join(output_directory, 'hparams.py') # run/
+    print("saving current configuration in output dir")
+
+    os.system('cp ./hparams.py {}' % (output_hparams_path))
+
+    tboard_out_path = os.path.join(output_directory, 'tb_logs')
+    print("setting up tboard log in %s" % (tboard_out_path))
+    logger = SummaryWriter(tboard_out_path)
+    return logger
 
 def parse_data_from_batch(batch):
+ 
     feat_target = batch['feat_target']
     text = batch['text']
 
@@ -42,6 +60,10 @@ def parse_data_from_batch(batch):
     text = text.cuda()
     in_lens, out_lens = in_lens.cuda(), out_lens.cuda()
 
+    feat_pos=feat_pos.cuda()
+    src_pos=src_pos.cuda()
+
+
     return (feat_target, text,
             in_lens, out_lens,
             feat_pos,src_pos,max_feat_len,
@@ -54,7 +76,8 @@ def main(args):
 
     # Define model
     print("Use Text2Vec")
-    model = nn.DataParallel(Text2Vec()).to(device)
+    # model = nn.DataParallel(Text2Vec()).to(device) # multi-gpu
+    model=Text2Vec().to(device)
     print("Model Has Been Defined")
     num_param = utils.get_param_num(model)
     print('Number of TTS Parameters:', num_param)
@@ -62,12 +85,20 @@ def main(args):
     print("Load data to buffer")
     buffer = get_data_to_buffer(hp.train_list)
 
-    # Optimizer and loss
-    # Note:Change to Lamb optim
-    # optimizer = torch.optim.Adam(model.parameters(),
-    #                              betas=(0.9, 0.98),
-    #                              eps=1e-9)
+    # Get dataset
+    dataset = BufferDataset(buffer)
 
+    # Get Training Loader
+
+    training_loader = DataLoader(dataset,
+                                 batch_size=hp.batch_expand_size * hp.batch_size,
+                                 shuffle=True,
+                                 collate_fn=collate_fn_tensor,
+                                 drop_last=True,
+                                 num_workers=0)
+
+    # Optimizer and loss
+    # Note:Change Adam(fastspeech) to Lamb
     optimizer = Lamb(model.parameters(),
                                  lr=hp.learning_rate,
                                  betas = (hp.beta1, hp.beta2),
@@ -96,24 +127,13 @@ def main(args):
         print("\n---Model Restored at Step %d---\n" % args.restore_step)
     except:
         print("\n---Start New Training---\n")
-        if not os.path.exists(hp.checkpoint_path):
-            os.mkdir(hp.checkpoint_path)
+
+        os.makedirs(hp.checkpoint_path,exist_ok=True)
 
     # Init logger
-    if not os.path.exists(hp.logger_path):
-        os.mkdir(hp.logger_path)
+    os.makedirs(hp.logger_path,exist_ok=True)
 
-    # Get dataset
-    dataset = BufferDataset(buffer)
 
-    # Get Training Loader
-
-    training_loader = DataLoader(dataset,
-                                 batch_size=hp.batch_expand_size * hp.batch_size,
-                                 shuffle=True,
-                                 collate_fn=collate_fn_tensor,
-                                 drop_last=True,
-                                 num_workers=0)
     total_step = hp.epochs * len(training_loader) * hp.batch_expand_size
 
     # Define Some Information
@@ -126,11 +146,8 @@ def main(args):
     for epoch in range(hp.epochs):
         for i, batchs in enumerate(training_loader):
             # real batch start here
-            for j, db in enumerate(batchs):
+            for j, batch in enumerate(batchs):
                 start_time = time.perf_counter()
-
-                # current_step = i * hp.batch_expand_size + j + args.restore_step + \
-                #                epoch * len(training_loader) * hp.batch_expand_size + 1
 
                 # Init
                 scheduled_optim.zero_grad()
@@ -139,11 +156,11 @@ def main(args):
                 (wv_feat_target, text,
                  in_lens, out_lens,
                  wv_feat_pos, text_pos, max_wv_feat_len,
-                 attn_prior, audiopaths) = parse_data_from_batch(batchs)
+                 attn_prior, audiopaths) = parse_data_from_batch(batch)
 
-                # • [0, 6k): Use Asoft for the alignment matrix.
-                # • [6k, 18k): start using Viterbi Ahard instead of Asoft,
-                # • [18k, end): add binarization term λ2Lbin to the loss.
+                # • [0, 6k): Use A_soft for the alignment matrix.
+                # • [6k, 18k): start using Viterbi A_hard instead of A_soft,
+                # • [18k, end): add binarization term λ2L_bin to the loss.
 
                 if iteration >= hp.binarization_start_iter:
                     binarize = True  # binarization training phase

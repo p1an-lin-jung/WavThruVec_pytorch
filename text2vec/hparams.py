@@ -17,17 +17,19 @@ use_attn_prior_masking=True
 spk_channel= 1024 #Channel size for the speaker encoder
 n_speaker_dim=192
 input_wav= False # Text2vec use [wav2vec 2.0 feature] as ECAPA_TDNN input, while Vec2wav use [raw wav].
+use_multi_speaker_condition= True
+
 
 # Text2vec config
 max_seq_len = 3000
 
 encoder_dim = 256
-encoder_n_layer = 1
+encoder_n_layer = 1 #4
 encoder_head = 2
 encoder_conv1d_filter_size = 1024
 
 decoder_dim = 256
-decoder_n_layer = 4
+decoder_n_layer = 1 #4
 decoder_head = 2
 decoder_conv1d_filter_size = 1024
 
@@ -39,6 +41,7 @@ duration_predictor_kernel_size = 3
 dropout = 0.1
 
 # Train data
+run_path='./run'
 checkpoint_path = "./run/model_new"
 logger_path = "./run/logger"
 feat_ground_truth = "/data_mnt/aishell3/w2v_feat/train/"
@@ -77,5 +80,6 @@ binarization_start_iter=6000
 kl_loss_start_iter= 18000
 learn_alignments=True
 binarization_loss_weight=1.0
+use_speaker_emb_for_alignment=True
 
 
