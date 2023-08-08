@@ -69,6 +69,9 @@ def get_data_to_buffer(file_path):
         file_path format:
             example.npy|the text.|spk_id
     """
+    if file_path=="":
+        return None
+
     buffer = list()
     text = process_text(file_path)
 

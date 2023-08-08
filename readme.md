@@ -1,6 +1,6 @@
 
 
-# WavThruVec Pytorch
+# WavThruVec Pytorch (unfinished)
 An Unofficial Implementation of WavThruVec Based on Pytorch.
 
 The original paper is [WavThruVec: Latent speech representation as intermediate features for
@@ -33,19 +33,22 @@ From this repository [wav2vec2.0 (chinese speech pretrain)](https://github.com/T
 [aishell3](https://www.aishelltech.com/aishell_3)
 
 The prepare_data.py:
-* 1.read the wav files and wav2vec2 pretrained model, resample the wavs as 16000hz, and convert to .npy files, which contrain the corresponding wav2vec 2.0 feature.
+* 1.read the wav files and wav2vec2 pretrained model, resample the wavs to 16khz, and convert to .npy files, which contrain the corresponding wav2vec 2.0 feature.
 * 2.read the aishell3 transcription(content.txt), and filter the Chinese phoneme and blank. Take the transcription and file path to build the train list(./data/enc_train.txt).
-* 3.build the vocab, which will be used to convert the characters to torch Variable . 
+* 3.build the vocab, which will be used to convert the characters to torch Variable. 
+
+As an example, prepare_data.py only take a few speakers and a few wav files. 
 
 
+## training
+WavThruVec contrains 2 components: Text2Vec(encoder) and Vec2Wav(decoder), and they train independently
+
+Thus, I placed them in two separate dirs and used different training configurations for each.
 
 ## Todo
-
-
-* text2vec - validation
-* Vec2Wav - (decoder)
+* Vec2Wav  (Major task)
 * experiment & Performace 
-
+* More details for implementation 
 
 
 ## Reference
@@ -64,6 +67,6 @@ The prepare_data.py:
 - [FastSpeech](https://arxiv.org/abs/1905.09263)
 - [FastSpeech2](https://arxiv.org/abs/2006.04558)
 - [hifi-gan](https://arxiv.org/pdf/2010.05646.pdf)
-- wav2vec
+- [wav2vec](https://arxiv.org/pdf/2006.11477.pdf)
 - [rad-tts](https://openreview.net/pdf?id=0NQwnnwAORi)
 - [monotonic alignment search](https://arxiv.org/pdf/2108.10447.pdf)

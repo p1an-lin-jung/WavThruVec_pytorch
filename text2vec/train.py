@@ -11,6 +11,7 @@ import math
 
 from model import Text2Vec
 from loss import DNNLoss
+from log_utils import plot_alignment_to_numpy
 from dataset import BufferDataset, DataLoader
 from dataset import get_data_to_buffer, collate_fn_tensor
 from optimizer import ScheduledOptim
@@ -46,7 +47,7 @@ def parse_data_from_batch(batch):
     out_lens = batch['output_lengths']
 
     feat_pos=batch['feat_pos']
-    src_pos = batch["src_pos"]
+    text_pos = batch["src_pos"]
     max_feat_len=batch["feat_max_len"]
 
     attn_prior = batch['attn_prior']
@@ -61,111 +62,139 @@ def parse_data_from_batch(batch):
     in_lens, out_lens = in_lens.cuda(), out_lens.cuda()
 
     feat_pos=feat_pos.cuda()
-    src_pos=src_pos.cuda()
+    text_pos=text_pos.cuda()
 
 
     return (feat_target, text,
             in_lens, out_lens,
-            feat_pos,src_pos,max_feat_len,
+            feat_pos,text_pos,max_feat_len,
             attn_prior, audiopaths)
 
 
-def compute_validation_loss(iteration, model, criterion, valset, collate_fn,
-                            batch_size, n_gpus, logger=None, train_config=None):
+def compute_validation_loss(iteration, model, criterion, valset,
+                            attention_kl_loss=None,
+                            logger=None, train_config=None):
 
     model.eval()
     with torch.no_grad():
-        val_sampler = DistributedSampler(valset) if n_gpus > 1 else None
-        val_loader = DataLoader(valset, sampler=val_sampler, num_workers=8,
-                                shuffle=False, batch_size=batch_size,
-                                pin_memory=False, collate_fn=collate_fn)
+        # val_sampler = DistributedSampler(valset) if n_gpus > 1 else None
+        val_loader = DataLoader(valset, sampler=None, num_workers=8,
+                                shuffle=False, batch_size=hp.batch_expand_size * hp.batch_size,
+                                pin_memory=False, collate_fn=collate_fn_tensor)
 
         loss_outputs_full = {}
         n_batches = len(val_loader)
+        loss_tuple=[0.0,0.0,0.0]
+        total_loss=0.0
         for i, batch in enumerate(val_loader):
-            (mel, speaker_ids, text, in_lens, out_lens, attn_prior,
-             f0, voiced_mask, p_voiced, energy_avg,
-             audiopaths) = parse_data_from_batch(batch)
+            (feat_target, text, in_lens,
+             out_lens,feat_pos,text_pos,
+             max_feat_len,attn_prior, audiopaths) = parse_data_from_batch(batch)
 
-            outputs = model(
-                mel, speaker_ids, text, in_lens, out_lens,
-                binarize_attention=True, attn_prior=attn_prior, f0=f0,
-                energy_avg=energy_avg, voiced_mask=voiced_mask,
-                p_voiced=p_voiced)
-            loss_outputs = criterion(outputs, in_lens, out_lens)
-            for k, (v, w) in loss_outputs.items():
-                reduced_v = reduce_tensor(v, n_gpus, 0).item()
-                if k in loss_outputs_full.keys():
-                    loss_outputs_full[k] += (reduced_v / n_batches)
-                else:
-                    loss_outputs_full[k] = (reduced_v / n_batches)
+            outputs =  model(
+                    feat_target,text,text_pos,
+                    in_lens,out_lens,mel_pos=feat_pos,
+                    mel_max_length=max_feat_len,attn_prior=attn_prior,
+                   )
+
+            t2v_loss = criterion(outputs['feat_output'],
+                                     outputs['feat_postnet_output'],
+                                     outputs['duration_predictor_output'],
+                                     feat_target,
+                                     outputs['duration'])
+
+            if iteration >= hp.kl_loss_start_iter:
+                binarization_loss = attention_kl_loss(
+                    outputs['attn'], outputs['attn_soft'])
+                total_loss += binarization_loss * hp.binarization_loss_weight
+            else:
+                binarization_loss = torch.zeros_like(total_loss)
+
+            for k in range(len(t2v_loss)):
+                loss_tuple[k]+=t2v_loss[k]
+
+        total_loss/=n_batches # now, total_loss == binarization_loss.sum(), so divide n_batches
+
+        for k in range(len(t2v_loss)):
+            loss_tuple[k] /= n_batches # mean loss
+            total_loss += loss_tuple[k] # mean loss
+
+    loss_outputs_full['total_loss']=total_loss.item()
+    loss_outputs_full['mel_loss'] = loss_tuple[0].item()
+    loss_outputs_full['mel_postnet_loss'] = loss_tuple[1].item()
+    loss_outputs_full['duration_loss'] = loss_tuple[2].item()
+    loss_outputs_full['attn_binarization_loss'] = binarization_loss.item()
 
     if logger is not None:
-        for k, v in loss_outputs_full.items():
-            logger.add_scalar('val/'+k, v, iteration)
+
+        logger.add_scalar('val/total_loss', loss_outputs_full['total_loss'], iteration)
+        logger.add_scalar('val/mel_loss', loss_outputs_full['mel_loss'], iteration)
+        logger.add_scalar('val/mel_postnet_loss', loss_outputs_full['mel_postnet_loss'], iteration)
+        logger.add_scalar('val/duration_loss', loss_outputs_full['duration_loss'], iteration)
+        logger.add_scalar('val/attn_binarization_loss', loss_outputs_full['attn_binarization_loss'], iteration)
+
         attn_used = outputs['attn']
-        attn_soft = outputs['attn_soft']
+        attn_soft = outputs['attn_soft'] # [bz,1,len_feat,len_text][0,0]->[len_feat,len_text]
         audioname = os.path.basename(audiopaths[0])
         if attn_used is not None:
             logger.add_image(
-                'attention_weights',
+                'attention_weights(align_soft)',
                 plot_alignment_to_numpy(
                     attn_soft[0, 0].data.cpu().numpy().T, title=audioname),
                 iteration, dataformats='HWC')
             logger.add_image(
-                'attention_weights_mas',
+                'attention_weights_mas(align_hard)',
                 plot_alignment_to_numpy(
                     attn_used[0, 0].data.cpu().numpy().T, title=audioname),
                 iteration, dataformats='HWC')
-            attribute_sigmas = []
-            """ NOTE: if training vanilla radtts (no attributes involved),
-            use log_attribute_samples only, as there will be no ground truth
-            features available. The infer function in this case will work with
-            f0=None, energy_avg=None, and voiced_mask=None
-            """
-            if train_config['log_decoder_samples']: # decoder with gt features
-                attribute_sigmas.append(-1)
-            if train_config['log_attribute_samples']: # attribute prediction
-                if model.is_attribute_unconditional():
-                    attribute_sigmas.extend([1.0])
-                else:
-                    attribute_sigmas.extend([0.1, 0.5, 0.8, 1.0])
-            if len(attribute_sigmas) > 0:
-                durations = attn_used[0, 0].sum(0, keepdim=True)
-                durations = (durations + 0.5).floor().int()
-                # load vocoder to CPU to avoid taking up valuable GPU vRAM
-                vocoder_checkpoint_path = train_config['vocoder_checkpoint_path']
-                vocoder_config_path = train_config['vocoder_config_path']
-                vocoder, denoiser = load_vocoder(
-                    vocoder_checkpoint_path, vocoder_config_path, to_cuda=False)
-                for attribute_sigma in attribute_sigmas:
-                    try:
-                        if attribute_sigma > 0.0:
-                            model_output = model.infer(
-                                speaker_ids[0:1], text[0:1], 0.8,
-                                dur=durations, f0=None, energy_avg=None,
-                                voiced_mask=None, sigma_f0=attribute_sigma,
-                                sigma_energy=attribute_sigma)
-                        else:
-                            model_output = model.infer(
-                                speaker_ids[0:1], text[0:1], 0.8,
-                                dur=durations, f0=f0[0:1, :durations.sum()],
-                                energy_avg=energy_avg[0:1, :durations.sum()],
-                                voiced_mask=voiced_mask[0:1, :durations.sum()])
-                    except:
-                        print("Instability or issue occured during inference, skipping sample generation for TB logger")
-                        continue
-                    mels = model_output['mel']
-                    audio = vocoder(mels.cpu()).float()[0]
-                    audio_denoised = denoiser(
-                        audio, strength=0.00001)[0].float()
-                    audio_denoised = audio_denoised[0].detach().cpu().numpy()
-                    audio_denoised = audio_denoised / np.abs(audio_denoised).max()
-                    if attribute_sigma < 0:
-                        sample_tag = "decoder_sample_gt_attributes"
-                    else:
-                        sample_tag = f"sample_attribute_sigma_{attribute_sigma}"
-                    logger.add_audio(sample_tag, audio_denoised, iteration, data_config['sampling_rate'])
+
+            # attribute_sigmas = []
+            #
+            # if train_config['log_decoder_samples']: # decoder with gt features
+            #     attribute_sigmas.append(-1)
+            # if train_config['log_attribute_samples']: # attribute prediction
+            #     if model.is_attribute_unconditional():
+            #         attribute_sigmas.extend([1.0])
+            #     else:
+            #         attribute_sigmas.extend([0.1, 0.5, 0.8, 1.0])
+
+
+            # if len(attribute_sigmas) > 0:
+            #     durations = attn_used[0, 0].sum(0, keepdim=True)
+            #     durations = (durations + 0.5).floor().int()
+            #     # load vocoder to CPU to avoid taking up valuable GPU vRAM
+            #     vocoder_checkpoint_path = train_config['vocoder_checkpoint_path']
+            #     vocoder_config_path = train_config['vocoder_config_path']
+            #     vocoder, denoiser = load_vocoder(
+            #         vocoder_checkpoint_path, vocoder_config_path, to_cuda=False)
+            #     for attribute_sigma in attribute_sigmas:
+            #         try:
+            #             if attribute_sigma > 0.0:
+            #                 model_output = model.infer(
+            #                     speaker_ids[0:1], text[0:1], 0.8,
+            #                     dur=durations, f0=None, energy_avg=None,
+            #                     voiced_mask=None, sigma_f0=attribute_sigma,
+            #                     sigma_energy=attribute_sigma)
+            #             else:
+            #                 model_output = model.infer(
+            #                     speaker_ids[0:1], text[0:1], 0.8,
+            #                     dur=durations, f0=f0[0:1, :durations.sum()],
+            #                     energy_avg=energy_avg[0:1, :durations.sum()],
+            #                     voiced_mask=voiced_mask[0:1, :durations.sum()])
+            #         except:
+            #             print("Instability or issue occured during inference, skipping sample generation for TB logger")
+            #             continue
+            #         mels = model_output['mel']
+            #         audio = vocoder(mels.cpu()).float()[0]
+            #         audio_denoised = denoiser(
+            #             audio, strength=0.00001)[0].float()
+            #         audio_denoised = audio_denoised[0].detach().cpu().numpy()
+            #         audio_denoised = audio_denoised / np.abs(audio_denoised).max()
+            #         if attribute_sigma < 0:
+            #             sample_tag = "decoder_sample_gt_attributes"
+            #         else:
+            #             sample_tag = f"sample_attribute_sigma_{attribute_sigma}"
+            #         logger.add_audio(sample_tag, audio_denoised, iteration, data_config['sampling_rate'])
     model.train()
     return loss_outputs_full
 
@@ -181,21 +210,22 @@ def main(args):
     print("Model Has Been Defined")
     num_param = utils.get_param_num(model)
     print('Number of TTS Parameters:', num_param)
+
     # Get buffer
     print("Load data to buffer")
     buffer = get_data_to_buffer(hp.train_list)
-
+    val_buffer=get_data_to_buffer(hp.val_list)
     # Get dataset
     dataset = BufferDataset(buffer)
+    valset = BufferDataset(val_buffer)
 
     # Get Training Loader
-
     training_loader = DataLoader(dataset,
                                  batch_size=hp.batch_expand_size * hp.batch_size,
                                  shuffle=True,
                                  collate_fn=collate_fn_tensor,
                                  drop_last=True,
-                                 num_workers=0)
+                                 num_workers=8)
 
     # Optimizer and loss
     # Note:Change Adam(fastspeech) to Lamb
@@ -228,7 +258,7 @@ def main(args):
 
     # Init logger
     os.makedirs(hp.logger_path,exist_ok=True)
-    # logger=prepare_output_folders_and_logger()
+    tensorboard_logger=prepare_output_folders_and_logger(hp.run_path)
 
     total_step = hp.epochs * len(training_loader) * hp.batch_expand_size
 
@@ -278,10 +308,6 @@ def main(args):
                     attn_prior=attn_prior,
                    )
 
-                loss_outputs={}
-
-
-
                 # compute the MSE between: 1. gt-feat and predicated feat
                 #                          2. duration from hard-attn and duration from length_regulator
                 mel_loss, mel_postnet_loss, duration_loss = text2vec_loss(outputs['feat_output'],
@@ -293,13 +319,13 @@ def main(args):
                 total_loss = mel_loss + mel_postnet_loss + duration_loss
 
                 w_bin = hp.binarization_loss_weight
-                if binarize and iteration >= hp.kl_loss_start_iter:
+                if iteration >= hp.kl_loss_start_iter:
                     binarization_loss = attention_kl_loss(
                         outputs['attn'], outputs['attn_soft'])
                     total_loss += binarization_loss * w_bin
                 else:
                     binarization_loss = torch.zeros_like(total_loss)
-                loss_outputs['binarization_loss'] = (binarization_loss, w_bin)
+
 
                 # Logger
                 t_l = total_loss.item()
@@ -309,11 +335,11 @@ def main(args):
                 attn_kl_l=binarization_loss.item()
 
                 # log loss
-                # logger.add_scalar('train/total_loss' , t_l, iteration)
-                # logger.add_scalar('train/mel_loss' , m_l, iteration)
-                # logger.add_scalar('train/mel_postnet_loss' , m_p_l, iteration)
-                # logger.add_scalar('train/duration_loss' , d_l, iteration)
-                # logger.add_scalar('train/binarization_loss' , attn_kl_l, iteration)
+                tensorboard_logger.add_scalar('train/total_loss' , t_l, iteration)
+                tensorboard_logger.add_scalar('train/mel_loss' , m_l, iteration)
+                tensorboard_logger.add_scalar('train/mel_postnet_loss' , m_p_l, iteration)
+                tensorboard_logger.add_scalar('train/duration_loss' , d_l, iteration)
+                tensorboard_logger.add_scalar('train/attn_binarization_loss' , attn_kl_l, iteration)
 
 
                 # Backward
@@ -330,7 +356,7 @@ def main(args):
                 else:
                     scheduled_optim.step_and_update_lr()
 
-                # Print
+                # Print and save
                 if iteration % hp.log_step == 0:
                     Now = time.perf_counter()
 
@@ -360,17 +386,14 @@ def main(args):
                     )}, os.path.join(hp.checkpoint_path, 'checkpoint_%d.pth.tar' % iteration))
                     print("save model at step %d ..." % iteration)
 
-                # todo
                 # val
-                # if iteration > -1 and iteration % hp.val_step == 0:
-                #     val_loss_outputs = compute_validation_loss(
-                #             iteration, model, criterion, valset, collate_fn,
-                #             batch_size, n_gpus, logger=logger,
-                #             train_config=train_config)
-                #     print('Validation loss:', val_loss_outputs)
-                #     with open(os.path.join(hp.logger_path, "attn_kl_loss.txt"), "a") as f_attn_kl_loss:
-                #         f_attn_kl_loss.write(str(val_loss_outputs.item()) + "\n")
-
+                if iteration % hp.val_step == 0:
+                    val_loss_outputs = compute_validation_loss(
+                            iteration, model, text2vec_loss, valset,
+                            attention_kl_loss=attention_kl_loss,
+                            logger=tensorboard_logger)
+                    print('Validation loss:', val_loss_outputs)
+                    tensorboard_logger.add_scalar('val/total_loss', t_l, iteration)
 
                 end_time = time.perf_counter()
                 Time = np.append(Time, end_time - start_time)
