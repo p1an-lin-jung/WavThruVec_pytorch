@@ -6,10 +6,32 @@ An Unofficial Implementation of WavThruVec Based on Pytorch.
 The original paper is [WavThruVec: Latent speech representation as intermediate features for
 neural speech synthesis](https://arxiv.org/abs/2203.16930)
 
-### Note:
-Use wav2vec2.0's output as the wav's feature(instead of mel spectrogram), with a dtype of 'float16' and a shape of (batch_size, n_frame, n_channel).
+
+## architecture 
+The Text2Vec model mostly follows the [fastspeech (xcmyz's)](https://github.com/xcmyz/FastSpeech) architecture.
+I modified the model, mainly based  on [rad-tts (nvidia's)](https://github.com/NVIDIA/radtts). 
+And I add an [ECAPA_TDNN](https://github.com/TaoRuijie/ECAPA-TDNN/tree/main) as speaker encoder, for multi-speaker condition.
+
+For other details not mentioned in the paper, I also follow the rad-tts.
+
+![](./figs/archi_fig.png)
+
+### Input
+
+* for text:
+
+Do not use any rule-based text normalization or phonemization methods, but feed raw character and transform to text-embedding as inputs.
+
+* for audio:
+
+Use [wav2vec 2.0](https://github.com/TencentGameMate/chinese_speech_pretrain)'s output as the wav's feature(instead of mel spectrogram), with a dtype of 'float16' and a shape of (batch_size, n_frame, n_channel).
 
 note: n_channel=768
+
+### wav2vec 2.0 pretrained
+
+From this repository [wav2vec2.0 (chinese speech pretrain)](https://github.com/TencentGameMate/chinese_speech_pretrain), and it can also be found at [huggingface](https://huggingface.co/TencentGameMate/chinese-wav2vec2-base)
+
 
 
 ## environment
@@ -24,9 +46,6 @@ note: n_channel=768
 * numpy                     1.22.4  
 * llvmlite                  0.39.1  
 
-## wav2vec 2.0 pretrained
-
-From this repository [wav2vec2.0 (chinese speech pretrain)](https://github.com/TencentGameMate/chinese_speech_pretrain), and it can also be found at [huggingface](https://huggingface.co/TencentGameMate/chinese-wav2vec2-base)
 
 
 ## dataset and prepare
