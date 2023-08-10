@@ -83,7 +83,6 @@ def get_data_to_buffer(file_path):
             hp.feat_ground_truth,npy_file)
         feat_gt_target = np.load(feat_gt_name)
 
-
         text_enc = np.array(
             text_to_sequence(character))
 

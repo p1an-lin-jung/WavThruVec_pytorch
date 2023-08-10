@@ -1,3 +1,5 @@
+import pdb
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,12 +30,14 @@ def prepare_output_folders_and_logger(output_directory):
         os.chmod(output_directory, 0o775)
         print("output directory", output_directory)
 
-    output_hparams_path = os.path.join(output_directory, 'hparams.py') # run/
+    output_hparams_path = os.path.join(output_directory, hp.log_seed,'hparams.py') # run/{seed}/hparams.py
     print("saving current configuration in output dir")
 
-    os.system('cp ./hparams.py {}' % (output_hparams_path))
+    cmd='cp text2vec/hparams.py {}'.format(output_hparams_path)
+    print(cmd)
+    os.system(cmd) # copy the current config
 
-    tboard_out_path = os.path.join(output_directory, 'tb_logs')
+    tboard_out_path = hp.tensorboard_logs_path# run/{seed}/tb_logs
     print("setting up tboard log in %s" % (tboard_out_path))
     logger = SummaryWriter(tboard_out_path)
     return logger
@@ -70,7 +74,7 @@ def parse_data_from_batch(batch):
             feat_pos,text_pos,max_feat_len,
             attn_prior, audiopaths)
 
-
+# todo : this validation is not efficient, may opt in the future
 def compute_validation_loss(iteration, model, criterion, valset,
                             attention_kl_loss=None,
                             logger=None, train_config=None):
@@ -80,126 +84,91 @@ def compute_validation_loss(iteration, model, criterion, valset,
         # val_sampler = DistributedSampler(valset) if n_gpus > 1 else None
         val_loader = DataLoader(valset, sampler=None, num_workers=8,
                                 shuffle=False, batch_size=hp.batch_expand_size * hp.batch_size,
-                                pin_memory=False, collate_fn=collate_fn_tensor)
+                                pin_memory=False, collate_fn=collate_fn_tensor,drop_last = True)
 
         loss_outputs_full = {}
-        n_batches = len(val_loader)
-        loss_tuple=[0.0,0.0,0.0]
-        total_loss=0.0
-        for i, batch in enumerate(val_loader):
-            (feat_target, text, in_lens,
-             out_lens,feat_pos,text_pos,
-             max_feat_len,attn_prior, audiopaths) = parse_data_from_batch(batch)
+        val_WVF_loss,val_WVF_postnet_loss=[],[] # WVF-loss and WVF-postnet-loss,not duration-loss
 
-            outputs =  model(
-                    feat_target,text,text_pos,
-                    in_lens,out_lens,mel_pos=feat_pos,
-                    mel_max_length=max_feat_len,attn_prior=attn_prior,
-                   )
+        for i, batchs in enumerate(val_loader):
+            for j, batch in enumerate(batchs):
+                (feat_target, text, in_lens,
+                 out_lens,feat_pos,text_pos,
+                 max_feat_len,attn_prior, audiopaths) = parse_data_from_batch(batch)
 
-            t2v_loss = criterion(outputs['feat_output'],
-                                     outputs['feat_postnet_output'],
-                                     outputs['duration_predictor_output'],
-                                     feat_target,
-                                     outputs['duration'])
 
-            if iteration >= hp.kl_loss_start_iter:
-                binarization_loss = attention_kl_loss(
-                    outputs['attn'], outputs['attn_soft'])
-                total_loss += binarization_loss * hp.binarization_loss_weight
-            else:
-                binarization_loss = torch.zeros_like(total_loss)
+                if len(in_lens)<hp.batch_size:
+                    continue
+                for si in range(hp.batch_size):
+                    # pdb.set_trace()
+                    text_len=in_lens[si]
 
-            for k in range(len(t2v_loss)):
-                loss_tuple[k]+=t2v_loss[k]
+                    feat_len=out_lens[si]
+                    b=attn_prior[si,:feat_len,:text_len].unsqueeze(0)
+                    try:
+                        outputs =  model(
+                            feat_target[si][:feat_len].unsqueeze(0),#[1,n-f,768]
+                            text[si][:text_len].unsqueeze(0), #[1,n-t]
+                            text_pos[si][:text_len].unsqueeze(0),##[1,n-t]
+                            in_lens=text_len.unsqueeze(0), #[1]
+                            out_lens=feat_len.unsqueeze(0),# [1]
+                            WVF_pos=feat_pos[si][:feat_len].unsqueeze(0),#[1,n-f]
+                            WVF_max_length=feat_len.item(),
+                            attn_prior=b,
+                        )
+                    except:
+                        continue
 
-        total_loss/=n_batches # now, total_loss == binarization_loss.sum(), so divide n_batches
+                    if feat_target.shape[1]<outputs['feat_output'].shape[1]:
+                        continue
+                    WVF_loss,WVF_postnet_loss = criterion(outputs['feat_output'],
+                                         outputs['feat_postnet_output'],
+                                         feat_target[si,:outputs['feat_output'].shape[1],:].unsqueeze(0),
+                                         # outputs['duration_predictor_output'],
+                                         # outputs['duration']
+                                         )
+                    val_WVF_loss.append(WVF_loss.item())
+                    val_WVF_postnet_loss.append(WVF_postnet_loss.item())
+        # pdb.set_trace()
+        mean_WVF_loss = np.mean(val_WVF_loss)
+        mean_WVF_postnet_loss = np.mean(val_WVF_postnet_loss)
 
-        for k in range(len(t2v_loss)):
-            loss_tuple[k] /= n_batches # mean loss
-            total_loss += loss_tuple[k] # mean loss
+        total_loss = mean_WVF_loss+mean_WVF_postnet_loss
 
-    loss_outputs_full['total_loss']=total_loss.item()
-    loss_outputs_full['mel_loss'] = loss_tuple[0].item()
-    loss_outputs_full['mel_postnet_loss'] = loss_tuple[1].item()
-    loss_outputs_full['duration_loss'] = loss_tuple[2].item()
-    loss_outputs_full['attn_binarization_loss'] = binarization_loss.item()
+    loss_outputs_full['total_loss']= total_loss
+    loss_outputs_full['WVF_loss'] = mean_WVF_loss
+    loss_outputs_full['WVF_postnet_loss'] = mean_WVF_postnet_loss
+    # loss_outputs_full['duration_loss'] = loss_tuple[2].item()
+    # loss_outputs_full['attn_binarization_loss'] = binarization_loss.item()
 
     if logger is not None:
-
+        logger.add_scalar('val/validation-data-num', len(val_WVF_loss), iteration)
         logger.add_scalar('val/total_loss', loss_outputs_full['total_loss'], iteration)
-        logger.add_scalar('val/mel_loss', loss_outputs_full['mel_loss'], iteration)
-        logger.add_scalar('val/mel_postnet_loss', loss_outputs_full['mel_postnet_loss'], iteration)
-        logger.add_scalar('val/duration_loss', loss_outputs_full['duration_loss'], iteration)
-        logger.add_scalar('val/attn_binarization_loss', loss_outputs_full['attn_binarization_loss'], iteration)
+        logger.add_scalar('val/WVF_loss', loss_outputs_full['WVF_loss'], iteration)
+        logger.add_scalar('val/WVF_postnet_loss', loss_outputs_full['WVF_postnet_loss'], iteration)
+        # logger.add_scalar('val/duration_loss', loss_outputs_full['duration_loss'], iteration)
+        # logger.add_scalar('val/attn_binarization_loss', loss_outputs_full['attn_binarization_loss'], iteration)
 
         attn_used = outputs['attn']
         attn_soft = outputs['attn_soft'] # [bz,1,len_feat,len_text][0,0]->[len_feat,len_text]
         audioname = os.path.basename(audiopaths[0])
         if attn_used is not None:
             logger.add_image(
-                'attention_weights(align_soft)',
+                'val/attention_weights(align_soft)',
                 plot_alignment_to_numpy(
                     attn_soft[0, 0].data.cpu().numpy().T, title=audioname),
                 iteration, dataformats='HWC')
             logger.add_image(
-                'attention_weights_mas(align_hard)',
+                'val/attention_weights_mas(align_hard)',
                 plot_alignment_to_numpy(
                     attn_used[0, 0].data.cpu().numpy().T, title=audioname),
                 iteration, dataformats='HWC')
 
-            # attribute_sigmas = []
-            #
-            # if train_config['log_decoder_samples']: # decoder with gt features
-            #     attribute_sigmas.append(-1)
-            # if train_config['log_attribute_samples']: # attribute prediction
-            #     if model.is_attribute_unconditional():
-            #         attribute_sigmas.extend([1.0])
-            #     else:
-            #         attribute_sigmas.extend([0.1, 0.5, 0.8, 1.0])
-
-
-            # if len(attribute_sigmas) > 0:
-            #     durations = attn_used[0, 0].sum(0, keepdim=True)
-            #     durations = (durations + 0.5).floor().int()
-            #     # load vocoder to CPU to avoid taking up valuable GPU vRAM
-            #     vocoder_checkpoint_path = train_config['vocoder_checkpoint_path']
-            #     vocoder_config_path = train_config['vocoder_config_path']
-            #     vocoder, denoiser = load_vocoder(
-            #         vocoder_checkpoint_path, vocoder_config_path, to_cuda=False)
-            #     for attribute_sigma in attribute_sigmas:
-            #         try:
-            #             if attribute_sigma > 0.0:
-            #                 model_output = model.infer(
-            #                     speaker_ids[0:1], text[0:1], 0.8,
-            #                     dur=durations, f0=None, energy_avg=None,
-            #                     voiced_mask=None, sigma_f0=attribute_sigma,
-            #                     sigma_energy=attribute_sigma)
-            #             else:
-            #                 model_output = model.infer(
-            #                     speaker_ids[0:1], text[0:1], 0.8,
-            #                     dur=durations, f0=f0[0:1, :durations.sum()],
-            #                     energy_avg=energy_avg[0:1, :durations.sum()],
-            #                     voiced_mask=voiced_mask[0:1, :durations.sum()])
-            #         except:
-            #             print("Instability or issue occured during inference, skipping sample generation for TB logger")
-            #             continue
-            #         mels = model_output['mel']
-            #         audio = vocoder(mels.cpu()).float()[0]
-            #         audio_denoised = denoiser(
-            #             audio, strength=0.00001)[0].float()
-            #         audio_denoised = audio_denoised[0].detach().cpu().numpy()
-            #         audio_denoised = audio_denoised / np.abs(audio_denoised).max()
-            #         if attribute_sigma < 0:
-            #             sample_tag = "decoder_sample_gt_attributes"
-            #         else:
-            #             sample_tag = f"sample_attribute_sigma_{attribute_sigma}"
-            #         logger.add_audio(sample_tag, audio_denoised, iteration, data_config['sampling_rate'])
     model.train()
     return loss_outputs_full
 
 
 def main(args):
+
     # Get device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -268,17 +237,19 @@ def main(args):
 
     # Training
     model = model.train()
-    iteration = 0
-    for epoch in range(hp.epochs):
+    iteration = args.restore_step
+    restart_epoch= max(0, iteration // (len(training_loader)*hp.batch_size*hp.batch_expand_size))
+    for epoch in range(restart_epoch,hp.epochs):
         for i, batchs in enumerate(training_loader):
             # real batch start here
             for j, batch in enumerate(batchs):
+
                 start_time = time.perf_counter()
 
                 # Init
                 scheduled_optim.zero_grad()
 
-                # Get Data，这里要把duration替换掉
+                # Get Data
                 (wv_feat_target, text,
                  in_lens, out_lens,
                  wv_feat_pos, text_pos, max_wv_feat_len,
@@ -302,21 +273,21 @@ def main(args):
                     text_pos,
                     in_lens,
                     out_lens,
-                    mel_pos=wv_feat_pos,
-                    mel_max_length=max_wv_feat_len,
+                    WVF_pos=wv_feat_pos,
+                    WVF_max_length=max_wv_feat_len,
                     binarize_attention=binarize,
                     attn_prior=attn_prior,
                    )
 
                 # compute the MSE between: 1. gt-feat and predicated feat
                 #                          2. duration from hard-attn and duration from length_regulator
-                mel_loss, mel_postnet_loss, duration_loss = text2vec_loss(outputs['feat_output'],
+                WVF_loss, WVF_postnet_loss, duration_loss = text2vec_loss(outputs['feat_output'],
                                                                           outputs['feat_postnet_output'],
-                                                                          outputs['duration_predictor_output'],
                                                                           wv_feat_target,
+                                                                          outputs['duration_predictor_output'],
                                                                           outputs['duration'])
 
-                total_loss = mel_loss + mel_postnet_loss + duration_loss
+                total_loss = WVF_loss + WVF_postnet_loss + duration_loss
 
                 w_bin = hp.binarization_loss_weight
                 if iteration >= hp.kl_loss_start_iter:
@@ -329,19 +300,17 @@ def main(args):
 
                 # Logger
                 t_l = total_loss.item()
-                m_l = mel_loss.item()
-                m_p_l = mel_postnet_loss.item()
+                m_l = WVF_loss.item()
+                m_p_l = WVF_postnet_loss.item()
                 d_l = duration_loss.item()
                 attn_kl_l=binarization_loss.item()
 
                 # log loss
                 tensorboard_logger.add_scalar('train/total_loss' , t_l, iteration)
-                tensorboard_logger.add_scalar('train/mel_loss' , m_l, iteration)
-                tensorboard_logger.add_scalar('train/mel_postnet_loss' , m_p_l, iteration)
+                tensorboard_logger.add_scalar('train/WVF_loss' , m_l, iteration)
+                tensorboard_logger.add_scalar('train/WVF_postnet_loss' , m_p_l, iteration)
                 tensorboard_logger.add_scalar('train/duration_loss' , d_l, iteration)
                 tensorboard_logger.add_scalar('train/attn_binarization_loss' , attn_kl_l, iteration)
-
-
                 # Backward
                 total_loss.backward()
 
@@ -380,6 +349,21 @@ def main(args):
                         f_logger.write(str3 + "\n")
                         f_logger.write(str4 + "\n")
                         f_logger.write("\n")
+
+                    # log attn fig
+                    audioname = os.path.basename(audiopaths[0])
+
+                    tensorboard_logger.add_image(
+                        'train/attention_weights(align_soft)',
+                        plot_alignment_to_numpy(
+                            outputs['attn_soft'][0, 0].data.cpu().numpy().T, title=audioname),
+                        iteration, dataformats='HWC')
+                    tensorboard_logger.add_image(
+                        'train/attention_weights_mas(align_hard)',
+                        plot_alignment_to_numpy(
+                            outputs['attn'][0, 0].data.cpu().numpy().T, title=audioname),
+                        iteration, dataformats='HWC')
+
 
                 if iteration % hp.save_step == 0:
                     torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(

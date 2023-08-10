@@ -24,7 +24,7 @@ Do not use any rule-based text normalization or phonemization methods, but feed 
 
 * for audio:
 
-Use [wav2vec 2.0](https://github.com/TencentGameMate/chinese_speech_pretrain)'s output as the wav's feature(instead of mel spectrogram), with a dtype of 'float16' and a shape of (batch_size, n_frame, n_channel).
+Use [wav2vec 2.0](https://github.com/TencentGameMate/chinese_speech_pretrain)'s output as the wav's feature(instead of mel spectrogram), with a dtype of `'float32'` and a shape of `(batch_size, n_frame, n_channel)`.
 
 note: n_channel=768
 
@@ -64,7 +64,29 @@ WavThruVec contrains 2 components: Text2Vec(encoder) and Vec2Wav(decoder), and t
 
 Thus, I placed them in two separate dirs and used different training configurations for each.
 
+
+## TensorBoard
+The TensorBoard loggers are stored in the `run/{log_seed}/tb_logs` directory. 
+Suppose `log_seed=1`, you can use this command to serve the TensorBoard on your localhost. 
+
+
+```
+tensorboard --logdir run/1/tb_logs
+```
+
+## save checkpoint and restore
+The model checkpoints are saved in the `run/{log_seed}/model_new` directory.
+
+Suppose you save checkpoints every 10000 iterations, and now you have a checkpoint `checkpoint_10000.pth.tar`.
+If you need to restart training at `step 10000`, then use this command.
+
+```
+python ./text2vec/train.py --restore_step 10000
+```
+
+
 ## Todo
+
 * Vec2Wav  (Major task)
 * experiment & Performace 
 * More details for implementation 

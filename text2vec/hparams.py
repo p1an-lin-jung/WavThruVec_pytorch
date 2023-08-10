@@ -1,5 +1,5 @@
 
-
+import os
 def get_vocab(vocab_path):
     with open(vocab_path,'r',encoding='utf-8')as fr:
         symbols = fr.readline()
@@ -42,13 +42,15 @@ dropout = 0.1
 
 # Train data
 run_path='./run'
-checkpoint_path = "./run/model_new"
-logger_path = "./run/logger"
+log_seed='2'
+tensorboard_logs_path=os.path.join(run_path,log_seed,"tb_logs")
+checkpoint_path = os.path.join(run_path,log_seed,"model_new")
+logger_path = os.path.join(run_path,log_seed,"logger")
 feat_ground_truth = "/data_mnt/aishell3/w2v_feat/train/"
 alignment_path = "/data_mnt/aishell3/enc_align/train"
 
 train_list='./data/enc_train.txt' # modify
-val_list=''
+val_list='./data/enc_train.txt'
 vocab_path='./data/vocab.txt'
 symbols=get_vocab(vocab_path)
 vocab_size=len(symbols)
@@ -67,10 +69,11 @@ beta2=0.98
 epsilon=1e-9
 weight_decay = 1e-6
 grad_clip_thresh = 1.0
-decay_step = [500000, 1000000, 2000000]
+decay_step = [200000, 400000, 800000]
 
-save_step = 3000
-log_step = 5
+save_step = 10000
+log_step = 1000
+val_step = 5000
 clear_Time = 20
 
 batch_expand_size = 16

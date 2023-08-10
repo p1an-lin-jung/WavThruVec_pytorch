@@ -163,6 +163,8 @@ class Decoder(nn.Module):
             d_model, d_inner, n_head, d_k, d_v, dropout=dropout) for _ in range(n_layers)])
 
     def forward(self, enc_seq, enc_pos, return_attns=False):
+        # encseq:# 16, 151, 448] enc_pos:[1（16）,151,]
+        #p slf_attn_mask.shape ：torch.Size([1, 151, 151])
 
         dec_slf_attn_list = []
 
@@ -171,9 +173,10 @@ class Decoder(nn.Module):
         non_pad_mask = get_non_pad_mask(enc_pos)
 
         # -- Forward
-        dec_output = enc_seq + self.position_enc(enc_pos)
+        dec_output = enc_seq + self.position_enc(enc_pos) #([16, 431, 448])
 
         for dec_layer in self.layer_stack:
+            # pdb.set_trace()
             dec_output, dec_slf_attn = dec_layer(
                 dec_output,
                 non_pad_mask=non_pad_mask,
@@ -195,9 +198,9 @@ class Text2Vec(nn.Module):
         self.decoder = Decoder()
 
         if hp.use_multi_speaker_condition:
-            self.mel_linear = Linear(hp.decoder_dim+hp.n_speaker_dim, hp.n_feat_dim)
+            self.WVF_linear = Linear(hp.decoder_dim+hp.n_speaker_dim, hp.n_feat_dim)
         else:
-            self.mel_linear = Linear(hp.decoder_dim, hp.n_feat_dim)
+            self.WVF_linear = Linear(hp.decoder_dim, hp.n_feat_dim)
 
 
         self.postnet = CBHG(hp.n_feat_dim, K=8,
@@ -215,11 +218,11 @@ class Text2Vec(nn.Module):
             else:
                 self.attention = ConvAttention(hp.n_feat_dim, hp.encoder_dim)
 
-    def mask_tensor(self, mel_output, position, mel_max_length):
+    def mask_tensor(self, WVF_output, position, WVF_max_length):
         lengths = torch.max(position, -1)[0]
-        mask = ~utils.get_mask_from_lengths(lengths, max_len=mel_max_length)
-        mask = mask.unsqueeze(-1).expand(-1, -1, mel_output.size(-1))
-        return mel_output.masked_fill(mask, 0.)
+        mask = ~utils.get_mask_from_lengths(lengths, max_len=WVF_max_length)
+        mask = mask.unsqueeze(-1).expand(-1, -1, WVF_output.size(-1))
+        return WVF_output.masked_fill(mask, 0.)
 
     def convert_hard_attn_to_duration(self,hard_attn):
         """
@@ -234,7 +237,7 @@ class Text2Vec(nn.Module):
         """For training purposes only. Binarizes attention with MAS. These will
         no longer recieve a gradient
         Args:
-            attn: B x 1 x max_mel_len x max_text_len
+            attn: B x 1 x max_WVF_len x max_text_len
         """
         b_size = attn.shape[0]
         with torch.no_grad():
@@ -243,7 +246,7 @@ class Text2Vec(nn.Module):
             for ind in range(b_size):
                 hard_attn = mas(attn_cpu[ind, 0, :out_lens[ind], :in_lens[ind]])
                 attn_out[ind, 0, :out_lens[ind], :in_lens[ind]] = torch.tensor(
-                    hard_attn, device=attn.get_device())  # bsz,1,len_text,len_mel
+                    hard_attn, device=attn.get_device())  # bsz,1,len_text,len_WVF
         return attn_out
 
     def get_attn_and_duration(self,
@@ -288,12 +291,12 @@ class Text2Vec(nn.Module):
         return attn,attn_soft,duration
 
 
-    def forward(self, wav_feat,src_seq, src_pos,in_lens, out_lens
-                ,mel_pos=None, mel_max_length=None, alpha=1.0,
+    def forward(self, wav_feat,src_seq, src_pos,in_lens=None, out_lens=None
+                ,WVF_pos=None, WVF_max_length=None, alpha=1.0,
                 binarize_attention=True,attn_prior=None):
 
         encoder_output, _,text_embeddings,speaker_vecs = self.encoder(src_seq, src_pos,wav_feat)
-
+        # pdb.set_trace()
         # train soft-alignment,and convert to hard-alignment and duration(as length_regulator's target)
         attn_hard,attn_soft,duration=self.get_attn_and_duration(wav_feat,
                                    in_lens,
@@ -306,21 +309,21 @@ class Text2Vec(nn.Module):
         if self.training:
             length_regulator_output, duration_predictor_output = self.length_regulator(encoder_output,
                                                                                        attn=attn_hard,
-                                                                                       mel_max_length=mel_max_length)
+                                                                                       WVF_max_length=WVF_max_length)
 
-            decoder_output = self.decoder(length_regulator_output, mel_pos) #torch.Size([16, 431, 448])
-            mel_output = self.mel_linear(decoder_output)
-            mel_output = self.mask_tensor(mel_output, mel_pos, mel_max_length)
-            residual = self.postnet(mel_output)
+            decoder_output = self.decoder(length_regulator_output, WVF_pos) #torch.Size([16, 431, 448])
+            WVF_output = self.WVF_linear(decoder_output)
+            WVF_output = self.mask_tensor(WVF_output, WVF_pos, WVF_max_length)
+            residual = self.postnet(WVF_output)
             residual = self.last_linear(residual)
-            mel_postnet_output = mel_output + residual
-            mel_postnet_output = self.mask_tensor(mel_postnet_output,
-                                                  mel_pos,
-                                                  mel_max_length)
+            WVF_postnet_output = WVF_output + residual
+            WVF_postnet_output = self.mask_tensor(WVF_postnet_output,
+                                                  WVF_pos,
+                                                  WVF_max_length)
 
             output={
-                'feat_output':mel_output,
-                'feat_postnet_output':mel_postnet_output,
+                'feat_output':WVF_output,
+                'feat_postnet_output':WVF_postnet_output,
                 'duration_predictor_output':duration_predictor_output,
                 'duration':duration,
                 'attn':attn_hard,
@@ -331,27 +334,22 @@ class Text2Vec(nn.Module):
             length_regulator_output, decoder_pos = self.length_regulator(encoder_output,
                                                                          alpha=alpha)
 
-            decoder_output = self.decoder(length_regulator_output, decoder_pos)
+            decoder_output = self.decoder(length_regulator_output, decoder_pos) #[16, 431, 448])
 
-            mel_output = self.mel_linear(decoder_output)
-            residual = self.postnet(mel_output)
+            WVF_output = self.WVF_linear(decoder_output)
+            residual = self.postnet(WVF_output)
             residual = self.last_linear(residual)
-            mel_postnet_output = mel_output + residual
+            WVF_postnet_output = WVF_output + residual
 
             output = {
-                'feat_output': mel_output,
-                'feat_postnet_output': mel_postnet_output,
+                'feat_output': WVF_output,
+                'feat_postnet_output': WVF_postnet_output,
                 # 'duration_predictor_output': duration_predictor_output,
                 'duration': duration,
                 'attn': attn_hard,
                 'attn_soft': attn_soft
             }
             return output
-
-
-
-
-
 
 
 if __name__ == "__main__":

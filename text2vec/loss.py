@@ -1,8 +1,9 @@
+import pdb
 
 import torch
 import torch.nn as nn
 
-# 计算软对齐和硬对齐之间的log-sum
+
 class AttentionBinarizationLoss(torch.nn.Module):
     def __init__(self):
         super(AttentionBinarizationLoss, self).__init__()
@@ -28,15 +29,24 @@ class DNNLoss(nn.Module):
     #
     #     return mel_loss, mel_postnet_loss, duration_predictor_loss
 
-    def forward(self, feat_output, feat_postnet, duration_predicted,
-                feat_target, duration_predictor_target):
+    def forward(self, feat_output, feat_postnet, feat_target,duration_predicted=None,
+                duration_predictor_target=None):
+
         feat_target.requires_grad = False
 
-        mel_loss = self.mse_loss(feat_output, feat_target)
-        mel_postnet_loss = self.mse_loss(feat_postnet, feat_target)
+        # pdb.set_trace()
+        WVF_loss = self.mse_loss(feat_output, feat_target)
+        WVF_postnet_loss = self.mse_loss(feat_postnet, feat_target)
 
-        duration_predictor_target.requires_grad = False
-        duration_predictor_loss = self.mse_loss(duration_predicted,
-                                               duration_predictor_target.float())
+        # training stage
+        if duration_predicted is not None:
+            duration_predictor_target.requires_grad = False
+            duration_predictor_loss = self.mse_loss(duration_predicted,
+                                                   duration_predictor_target.float())
 
-        return mel_loss, mel_postnet_loss, duration_predictor_loss
+
+            return WVF_loss, WVF_postnet_loss, duration_predictor_loss
+
+        # inference stage: not pass duration_predicted
+        else:
+            return WVF_loss,WVF_postnet_loss

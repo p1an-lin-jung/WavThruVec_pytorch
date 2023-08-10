@@ -44,9 +44,9 @@ class ScaledDotProductAttention(nn.Module):
 
         attn = torch.bmm(q, k.transpose(1, 2))
         attn = attn / self.temperature
-
+        # pdb.set_trace()
         if mask is not None:
-            attn = attn.masked_fill(mask, -np.inf)
+            attn = attn.masked_fill(mask, -np.inf)# train:[32, 27, 27])
 
         attn = self.softmax(attn)
         attn = self.dropout(attn)
@@ -97,13 +97,14 @@ class MultiHeadAttention(nn.Module):
         k = self.w_ks(k).view(sz_b, len_k, n_head, d_k)
         v = self.w_vs(v).view(sz_b, len_v, n_head, d_v)
 
+        # print(q.shape)
         q = q.permute(2, 0, 1, 3).contiguous().view(-1,
                                                     len_q, d_k)  # (n*b) x lq x dk
         k = k.permute(2, 0, 1, 3).contiguous().view(-1,
                                                     len_k, d_k)  # (n*b) x lk x dk
         v = v.permute(2, 0, 1, 3).contiguous().view(-1,
                                                     len_v, d_v)  # (n*b) x lv x dv
-
+        # pdb.set_trace()
         mask = mask.repeat(n_head, 1, 1)  # (n*b) x .. x ..
         output, attn = self.attention(q, k, v, mask=mask)
 
