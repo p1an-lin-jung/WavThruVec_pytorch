@@ -17,7 +17,7 @@ class ScheduledOptim():
         self._optimizer.step()
 
     def step_and_update_lr(self):
-        self._update_learning_rate()
+        # self._update_learning_rate()# don't need update lr manually
         self._optimizer.step()
 
     def get_learning_rate(self):

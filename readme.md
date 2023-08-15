@@ -26,13 +26,20 @@ Do not use any rule-based text normalization or phonemization methods, but feed 
 
 Use [wav2vec 2.0](https://github.com/TencentGameMate/chinese_speech_pretrain)'s output as the wav's feature(instead of mel spectrogram), with a dtype of `'float32'` and a shape of `(batch_size, n_frame, n_channel)`.
 
-note: n_channel=768
+note: n_channel=768 or 1024, it depends on which version of the wav2vec 2.0 pretrained model you are using, because TencentGameMate provide fairseq-version(768) and huggingface-version(1024). These two version has different output shape.
 
 ### wav2vec 2.0 pretrained
 
 From this repository [wav2vec2.0 (chinese speech pretrain)](https://github.com/TencentGameMate/chinese_speech_pretrain), and it can also be found at [huggingface](https://huggingface.co/TencentGameMate/chinese-wav2vec2-base)
 
+### attn_prior 
+One of the biggest difference between WavThruVec and FastSpeech is the monotonic alignment search(MAS) module (refer to the `alignment.py`). 
 
+In FastSpeech, the training inputs include Teacher-Forcing Alignment for mel frames and text tokens. Specifically, it involves using [MFA](https://montreal-forced-aligner.readthedocs.io/en/latest/) to generate the `duration` of mel frames for each text token before training.
+
+While in WavThruVec, the `duration` is generated using the MAS from the rad-tts, and is fed into the LengthRegulator(DurationPredictor).
+
+According to [monotonic alignment search](https://arxiv.org/pdf/2108.10447.pdf) and rad-tts implementation, when you training the model, align-prior files would be generated under `'./data/align_prior'` directory, with the file name format of `{n_token}_{n_feat}_prior.pth`.
 
 ## environment
 * CUDA 10.1

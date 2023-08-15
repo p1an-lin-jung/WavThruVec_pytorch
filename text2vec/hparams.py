@@ -6,7 +6,7 @@ def get_vocab(vocab_path):
     return symbols
 
 # wav2vec feat
-n_feat_dim = 768 # wav2vec 2.0 feature's dim
+n_feat_dim = 1024 # wav2vec 2.0 feature's dim
 text_cleaners = ['english_cleaners']
 betabinom_cache_path='./data/align_prior'
 betabinom_scaling_factor=1.0
@@ -42,24 +42,30 @@ dropout = 0.1
 
 # Train data
 run_path='./run'
-log_seed='2'
+log_seed='30_30'
 tensorboard_logs_path=os.path.join(run_path,log_seed,"tb_logs")
 checkpoint_path = os.path.join(run_path,log_seed,"model_new")
 logger_path = os.path.join(run_path,log_seed,"logger")
-feat_ground_truth = "/data_mnt/aishell3/w2v_feat/train/"
-alignment_path = "/data_mnt/aishell3/enc_align/train"
+feat_ground_truth = "/data_mnt/aishell3/w2v_feat/"
+# alignment_path = "/data_mnt/aishell3/enc_align/train"
 
-train_list='./data/enc_train.txt' # modify
-val_list='./data/enc_train.txt'
+train_list=['./data/enc_train_full.txt'] # ,'./data/enc_train_extd.txt'modify
+val_list=['./data/enc_val_full.txt']
 vocab_path='./data/vocab.txt'
 symbols=get_vocab(vocab_path)
 vocab_size=len(symbols)
 
 
 batch_size = 16
-epochs = 2000
+epochs = 200 # about 800k iters
 n_warm_up_step = 4000
+batch_expand_size = 16
 
+
+save_step = 50000
+log_step = 1000
+val_step = 5000
+clear_Time = 20
 
 
 # LAMB optimizer
@@ -69,14 +75,8 @@ beta2=0.98
 epsilon=1e-9
 weight_decay = 1e-6
 grad_clip_thresh = 1.0
-decay_step = [200000, 400000, 800000]
+decay_step = [200000, 400000, 600000]
 
-save_step = 10000
-log_step = 1000
-val_step = 5000
-clear_Time = 20
-
-batch_expand_size = 16
 
 # attn training , according to rad-tts
 binarization_start_iter=0 # must be 0

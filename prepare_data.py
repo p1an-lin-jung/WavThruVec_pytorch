@@ -102,13 +102,12 @@ def build_vocab(vocab_path,label_dict):
     simple_vocab = "PE "
     char_dict=set()
 
-    for ch in simple_vocab:
-        char_dict.add(ch)
-
     for k,v in label_dict.items():
         for ch in v:
             char_dict.add(ch)
     with open(vocab_path,'w',encoding='utf-8')as fw:
+        for ch in simple_vocab:
+            fw.write(ch)
         for ch in char_dict:
             fw.write(ch)
 

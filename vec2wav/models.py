@@ -4,6 +4,7 @@ import torch.nn as nn
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from utils import init_weights, get_padding
+from modules import ConditionalBatchNorm1d
 
 LRELU_SLOPE = 0.1
 
@@ -97,7 +98,15 @@ class Generator(torch.nn.Module):
         self.ups.apply(init_weights)
         self.conv_post.apply(init_weights)
 
-    def forward(self, x):
+        #
+        self.cbn=ConditionalBatchNorm1d()
+        self.linear=nn.Linear(192,64)
+
+    def forward(self, x,spk_emb=None):
+        
+        
+        
+        
         x = self.conv_pre(x)
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, LRELU_SLOPE)

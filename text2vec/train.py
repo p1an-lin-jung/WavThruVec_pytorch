@@ -23,6 +23,9 @@ from loss import  AttentionBinarizationLoss
 from torch_optimizer import Lamb
 from torch.utils.tensorboard import SummaryWriter
 
+
+val_error_batch_num=0
+
 def prepare_output_folders_and_logger(output_directory):
     # Get shared output_directory ready
     if not os.path.isdir(output_directory):
@@ -115,36 +118,49 @@ def compute_validation_loss(iteration, model, criterion, valset,
                             WVF_max_length=feat_len.item(),
                             attn_prior=b,
                         )
-                    except:
-                        continue
+                    
 
-                    if feat_target.shape[1]<outputs['feat_output'].shape[1]:
+                        
+                        WVF_loss,WVF_postnet_loss = criterion(outputs['feat_output'],
+                                            outputs['feat_postnet_output'],
+                                            feat_target[si,:outputs['feat_output'].shape[1],:].unsqueeze(0),
+                                            # outputs['duration_predictor_output'],
+                                            # outputs['duration']
+                                            )
+                    except:
+                        val_error_batch_num+=1
                         continue
-                    WVF_loss,WVF_postnet_loss = criterion(outputs['feat_output'],
-                                         outputs['feat_postnet_output'],
-                                         feat_target[si,:outputs['feat_output'].shape[1],:].unsqueeze(0),
-                                         # outputs['duration_predictor_output'],
-                                         # outputs['duration']
-                                         )
                     val_WVF_loss.append(WVF_loss.item())
                     val_WVF_postnet_loss.append(WVF_postnet_loss.item())
         # pdb.set_trace()
         mean_WVF_loss = np.mean(val_WVF_loss)
         mean_WVF_postnet_loss = np.mean(val_WVF_postnet_loss)
+        sum_WVF_loss = np.sum(val_WVF_loss)
+        sum_WVF_postnet_loss = np.sum(val_WVF_postnet_loss)
+        
+        mean_total_loss = mean_WVF_loss+mean_WVF_postnet_loss
+        sum_total_loss = sum_WVF_loss+sum_WVF_postnet_loss
 
-        total_loss = mean_WVF_loss+mean_WVF_postnet_loss
-
-    loss_outputs_full['total_loss']= total_loss
-    loss_outputs_full['WVF_loss'] = mean_WVF_loss
-    loss_outputs_full['WVF_postnet_loss'] = mean_WVF_postnet_loss
+    loss_outputs_full['mean_total_loss']= mean_total_loss
+    loss_outputs_full['mean_WVF_loss'] = mean_WVF_loss
+    loss_outputs_full['mean_WVF_postnet_loss'] = mean_WVF_postnet_loss
+    loss_outputs_full['sum_WVF_loss']= sum_WVF_loss
+    loss_outputs_full['sum_WVF_postnet_loss'] = sum_WVF_postnet_loss
+    loss_outputs_full['sum_total_loss'] = sum_total_loss
     # loss_outputs_full['duration_loss'] = loss_tuple[2].item()
     # loss_outputs_full['attn_binarization_loss'] = binarization_loss.item()
 
     if logger is not None:
         logger.add_scalar('val/validation-data-num', len(val_WVF_loss), iteration)
-        logger.add_scalar('val/total_loss', loss_outputs_full['total_loss'], iteration)
-        logger.add_scalar('val/WVF_loss', loss_outputs_full['WVF_loss'], iteration)
-        logger.add_scalar('val/WVF_postnet_loss', loss_outputs_full['WVF_postnet_loss'], iteration)
+        
+        
+        logger.add_scalar('val/total_loss(meam)', loss_outputs_full['mean_total_loss'], iteration)
+        logger.add_scalar('val/WVF_loss(meam)', loss_outputs_full['mean_WVF_loss'], iteration)
+        logger.add_scalar('val/WVF_postnet_loss(meam)', loss_outputs_full['mean_WVF_postnet_loss'], iteration)
+        logger.add_scalar('val/total_loss(sum)', loss_outputs_full['sum_WVF_loss'], iteration)
+        logger.add_scalar('val/WVF_loss(sum)', loss_outputs_full['sum_WVF_postnet_loss'], iteration)
+        logger.add_scalar('val/WVF_postnet_loss(sum)', loss_outputs_full['sum_total_loss'], iteration)
+        
         # logger.add_scalar('val/duration_loss', loss_outputs_full['duration_loss'], iteration)
         # logger.add_scalar('val/attn_binarization_loss', loss_outputs_full['attn_binarization_loss'], iteration)
 
@@ -153,12 +169,12 @@ def compute_validation_loss(iteration, model, criterion, valset,
         audioname = os.path.basename(audiopaths[0])
         if attn_used is not None:
             logger.add_image(
-                'val/attention_weights(align_soft)',
+                'val/attention_weights (align_soft)',
                 plot_alignment_to_numpy(
                     attn_soft[0, 0].data.cpu().numpy().T, title=audioname),
                 iteration, dataformats='HWC')
             logger.add_image(
-                'val/attention_weights_mas(align_hard)',
+                'val/attention_weights_mas (align_hard)',
                 plot_alignment_to_numpy(
                     attn_used[0, 0].data.cpu().numpy().T, title=audioname),
                 iteration, dataformats='HWC')
@@ -199,12 +215,12 @@ def main(args):
     # Optimizer and loss
     # Note:Change Adam(fastspeech) to Lamb
     optimizer = Lamb(model.parameters(),
-                                 lr=hp.learning_rate,
-                                 betas = (hp.beta1, hp.beta2),
-                                 eps = hp.epsilon,
-                                 weight_decay = hp.weight_decay)
+                    lr=hp.learning_rate,
+                    betas = (hp.beta1, hp.beta2),
+                    eps = hp.epsilon,
+                    weight_decay = hp.weight_decay)
     scheduled_optim = ScheduledOptim(optimizer,
-                           hp.decoder_dim,
+                           hp.learning_rate,
                            hp.n_warm_up_step,
                            args.restore_step)
 
@@ -230,7 +246,8 @@ def main(args):
     tensorboard_logger=prepare_output_folders_and_logger(hp.run_path)
 
     total_step = hp.epochs * len(training_loader) * hp.batch_expand_size
-
+    print('\ntotal steps:',total_step,'len(training_loader)',len(training_loader),'\n')
+    
     # Define Some Information
     Time = np.array([])
     Start = time.perf_counter()
@@ -239,6 +256,9 @@ def main(args):
     model = model.train()
     iteration = args.restore_step
     restart_epoch= max(0, iteration // (len(training_loader)*hp.batch_size*hp.batch_expand_size))
+    
+    error_batch_num=0
+    
     for epoch in range(restart_epoch,hp.epochs):
         for i, batchs in enumerate(training_loader):
             # real batch start here
@@ -266,27 +286,32 @@ def main(args):
                 if iteration >= hp.binarization_start_iter:
                     binarize = True  # binarization training phase
 
-
-                outputs = model(
-                    wv_feat_target,
-                    text,
-                    text_pos,
-                    in_lens,
-                    out_lens,
-                    WVF_pos=wv_feat_pos,
-                    WVF_max_length=max_wv_feat_len,
-                    binarize_attention=binarize,
-                    attn_prior=attn_prior,
-                   )
-
+                try:
+                    outputs = model(
+                        wv_feat_target,
+                        text,
+                        text_pos,
+                        in_lens,
+                        out_lens,
+                        WVF_pos=wv_feat_pos,
+                        WVF_max_length=max_wv_feat_len,
+                        binarize_attention=binarize,
+                        attn_prior=attn_prior,
+                    )
+                
                 # compute the MSE between: 1. gt-feat and predicated feat
                 #                          2. duration from hard-attn and duration from length_regulator
-                WVF_loss, WVF_postnet_loss, duration_loss = text2vec_loss(outputs['feat_output'],
+                
+                    WVF_loss, WVF_postnet_loss, duration_loss = text2vec_loss(outputs['feat_output'],
                                                                           outputs['feat_postnet_output'],
                                                                           wv_feat_target,
                                                                           outputs['duration_predictor_output'],
                                                                           outputs['duration'])
-
+                except:
+                    error_batch_num+=1
+                    continue
+                    
+                    
                 total_loss = WVF_loss + WVF_postnet_loss + duration_loss
 
                 w_bin = hp.binarization_loss_weight
@@ -331,7 +356,7 @@ def main(args):
 
                     str1 = "Epoch [{}/{}], Step [{}/{}]:".format(
                         epoch + 1, hp.epochs, iteration, total_step)
-                    str2 = "Mel Loss: {:.4f}, Mel PostNet Loss: {:.4f}, Duration Loss: {:.4f};".format(
+                    str2 = "W2V Feat Loss: {:.4f}, W2V Feat PostNet Loss: {:.4f}, Duration Loss: {:.4f};".format(
                         m_l, m_p_l, d_l)
                     str3 = "Current Learning Rate is {:.6f}.".format(
                         scheduled_optim.get_learning_rate())
@@ -366,8 +391,10 @@ def main(args):
 
 
                 if iteration % hp.save_step == 0:
-                    torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(
-                    )}, os.path.join(hp.checkpoint_path, 'checkpoint_%d.pth.tar' % iteration))
+                    torch.save({'model': model.state_dict(), 
+                                'optimizer': optimizer.state_dict(),
+                                'learning_rate': scheduled_optim.get_learning_rate(),
+                                }, os.path.join(hp.checkpoint_path, 'checkpoint_%d.pth.tar' % iteration))
                     print("save model at step %d ..." % iteration)
 
                 # val
@@ -377,7 +404,6 @@ def main(args):
                             attention_kl_loss=attention_kl_loss,
                             logger=tensorboard_logger)
                     print('Validation loss:', val_loss_outputs)
-                    tensorboard_logger.add_scalar('val/total_loss', t_l, iteration)
 
                 end_time = time.perf_counter()
                 Time = np.append(Time, end_time - start_time)
@@ -388,6 +414,11 @@ def main(args):
                     Time = np.append(Time, temp_value)
 
                 iteration+=1
+    
+    with open(os.path.join(hp.logger_path, "error_num.txt"), "a") as f_logger:
+        f_logger.write(error_batch_num)
+        f_logger.write(val_error_batch_num)
+        
 
 
 if __name__ == "__main__":

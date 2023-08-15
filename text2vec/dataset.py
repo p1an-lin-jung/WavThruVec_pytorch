@@ -57,23 +57,24 @@ def get_attention_prior(n_tokens, n_frames):
 
 
 
-def process_text(train_text_path):
-    with open(train_text_path, "r", encoding="utf-8") as f:
+def process_text(text_path):
+    with open(text_path, "r", encoding="utf-8") as f:
         txt = []
         for line in f.readlines():
             txt.append(line)
         return txt
 
-def get_data_to_buffer(file_path):
+def get_data_to_buffer(file_list):
     """
-        file_path format:
+        file_list[i] format:
             example.npy|the text.|spk_id
     """
-    if file_path=="":
-        return None
+    
 
     buffer = list()
-    text = process_text(file_path)
+    text=[]
+    for file_path in file_list:
+        text.extend(process_text(file_path))
 
 
     start = time.perf_counter()
@@ -221,6 +222,3 @@ def collate_fn_tensor(batch):
     return output
 
 
-if __name__ == "__main__":
-    # TEST
-    get_data_to_buffer()

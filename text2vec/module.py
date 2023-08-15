@@ -542,9 +542,10 @@ class ConvAttention(torch.nn.Module):
         attn_logprob = attn.clone()
 
         if mask is not None:
+             
             attn.data.masked_fill_(
-                mask.permute(0, 2, 1).unsqueeze(2), -float("inf"))
-
+                    mask.permute(0, 2, 1).unsqueeze(2), -float("inf"))
+             
         attn = self.softmax(attn)  # softmax along T2
         return attn, attn_logprob
 

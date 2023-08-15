@@ -212,7 +212,6 @@ class Text2Vec(nn.Module):
         self.use_speaker_emb_for_alignment=hp.use_speaker_emb_for_alignment
         if self.learn_alignments:
             if self.use_speaker_emb_for_alignment:
-                # n_feat_dim=768, that is the wav2vec's output shape
                 self.attention = ConvAttention(
                     hp.n_feat_dim, hp.encoder_dim + hp.n_speaker_dim)
             else:
@@ -296,16 +295,18 @@ class Text2Vec(nn.Module):
                 binarize_attention=True,attn_prior=None):
 
         encoder_output, _,text_embeddings,speaker_vecs = self.encoder(src_seq, src_pos,wav_feat)
-        # pdb.set_trace()
+
         # train soft-alignment,and convert to hard-alignment and duration(as length_regulator's target)
-        attn_hard,attn_soft,duration=self.get_attn_and_duration(wav_feat,
+        try:
+            attn_hard,attn_soft,duration=self.get_attn_and_duration(wav_feat,
                                    in_lens,
                                    out_lens,
                                    text_embeddings,
                                    speaker_vecs,
                                    attn_prior,
                                    binarize_attention=binarize_attention)
-
+        except:
+            pdb.set_trace()
         if self.training:
             length_regulator_output, duration_predictor_output = self.length_regulator(encoder_output,
                                                                                        attn=attn_hard,
