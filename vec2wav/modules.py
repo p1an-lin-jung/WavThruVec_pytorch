@@ -18,6 +18,7 @@ class ConditionalBatchNorm1d(nn.Module):
       self.layer.bias.data.zero_()             # Initialise bias at 0
 
     def forward(self, inputs, noise):
+      pdb.set_trace()
       outputs = self.batch_nrom(inputs)
       gamma, beta = self.layer(noise).chunk(2, 1)
       gamma = gamma.view(-1, self.num_features, 1)
@@ -27,3 +28,13 @@ class ConditionalBatchNorm1d(nn.Module):
 
       return outputs
   
+if __name__ == '__main__':
+    import pdb
+
+    pdb.set_trace()
+    data=torch.randn(16, 1024,80)
+    z = torch.randn(16, 128)
+    cbn=ConditionalBatchNorm1d(1024)
+    x=cbn(data,z)
+    nn.Linear(192,64)
+    print(x.shape)

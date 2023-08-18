@@ -19,6 +19,8 @@ from models import Generator, MultiPeriodDiscriminator, MultiScaleDiscriminator,
     discriminator_loss
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
 
+from ecapa_tdnn import ECAPA_TDNN
+
 torch.backends.cudnn.benchmark = True
 
 
@@ -33,7 +35,7 @@ def train(rank, a, h):
     generator = Generator(h).to(device)
     mpd = MultiPeriodDiscriminator().to(device)
     msd = MultiScaleDiscriminator().to(device)
-
+    spk_enc = ECAPA_TDNN().to(device)
     if rank == 0:
         print(generator)
         os.makedirs(a.checkpoint_path, exist_ok=True)
@@ -121,7 +123,11 @@ def train(rank, a, h):
             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
             y = y.unsqueeze(1)
 
-            y_g_hat = generator(x)
+
+            spk_emb=spk_enc(y_mel)
+            noise= torch.randn(h.batch_size,h.noise_dim)
+
+            y_g_hat = generator(x,spk_emb,noise)
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size,
                                           h.win_size,
                                           h.fmin, h.fmax_for_loss)

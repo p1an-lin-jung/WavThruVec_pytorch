@@ -83,6 +83,8 @@ class Generator(torch.nn.Module):
         resblock = ResBlock1 if h.resblock == '1' else ResBlock2
 
         self.ups = nn.ModuleList()
+
+        ## todo
         for i, (u, k) in enumerate(zip(h.upsample_rates, h.upsample_kernel_sizes)):
             self.ups.append(weight_norm(
                 ConvTranspose1d(h.upsample_initial_channel//(2**i), h.upsample_initial_channel//(2**(i+1)),
@@ -98,19 +100,29 @@ class Generator(torch.nn.Module):
         self.ups.apply(init_weights)
         self.conv_post.apply(init_weights)
 
-        #
-        self.cbn=ConditionalBatchNorm1d()
-        self.linear=nn.Linear(192,64)
+        # add cbn and fc
+        self.cbns=nn.ModuleList()
+        self.fcs=nn.ModuleList()
+        for i in range(len(self.ups)):
+            self.fcs.append(
+                nn.Linear(h.spk_dim+h.noise_dim,128), # Z_CHANNEL=128
+            )
+            self.cbns.append(
+                ConditionalBatchNorm1d(h.n_feat_dim), #???? 
+            )
+            
+                
 
-    def forward(self, x,spk_emb=None):
+    def forward(self, x,spk_emb=None,noise=None):
         
-        
-        
-        
+        spk_noise= torch.cat((spk_emb,noise),dim=1) # spk: [bz,192],ns:[bz,dim]
         x = self.conv_pre(x)
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, LRELU_SLOPE)
             x = self.ups[i](x)
+            
+            z=self.fcs[i](spk_noise)
+            x=self.cbns[i](x,z)
             xs = None
             for j in range(self.num_kernels):
                 if xs is None:
@@ -171,14 +183,10 @@ class DiscriminatorP(torch.nn.Module):
 
 
 class MultiPeriodDiscriminator(torch.nn.Module):
-    def __init__(self):
+    def __init__(self,hp):
         super(MultiPeriodDiscriminator, self).__init__()
         self.discriminators = nn.ModuleList([
-            DiscriminatorP(2),
-            DiscriminatorP(3),
-            DiscriminatorP(5),
-            DiscriminatorP(7),
-            DiscriminatorP(11),
+            DiscriminatorP(prd) for prd in hp.period 
         ])
 
     def forward(self, y, y_hat):
