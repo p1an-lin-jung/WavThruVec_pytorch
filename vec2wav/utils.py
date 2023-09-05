@@ -3,6 +3,7 @@ import os
 import matplotlib
 import torch
 from torch.nn.utils import weight_norm
+import torch.nn.functional as F
 matplotlib.use("Agg")
 import matplotlib.pylab as plt
 
@@ -56,3 +57,32 @@ def scan_checkpoint(cp_dir, prefix):
         return None
     return sorted(cp_list)[-1]
 
+def pad_2D_tensor(inputs, maxlen=None):
+    
+    def pad(x, max_len):
+        if x.size(0) > max_len:
+            raise ValueError("not max_len")
+
+        s = x.size(1)
+        x_padded = F.pad(x, (0, 0, 0, max_len-x.size(0))) #
+        return x_padded[:, :s]
+
+    if maxlen:
+        output = torch.stack([pad(x, maxlen) for x in inputs])
+    else:
+        max_len = max(x.size(0) for x in inputs)
+        # print(max_len)
+        output = torch.stack([pad(x, max_len) for x in inputs])
+
+    return output
+
+def pad_1D_tensor(inputs, PAD=0):
+    
+    def pad_data(x, length, PAD):
+        x_padded = F.pad(x, (0, length - x.shape[0]))
+        return x_padded
+
+    max_len = max((len(x) for x in inputs))
+    padded = torch.stack([pad_data(x, max_len, PAD) for x in inputs])
+
+    return padded

@@ -5,6 +5,7 @@ from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from utils import init_weights, get_padding
 from modules import ConditionalBatchNorm1d
+import hparams as hp
 
 LRELU_SLOPE = 0.1
 
@@ -79,7 +80,7 @@ class Generator(torch.nn.Module):
         self.h = h
         self.num_kernels = len(h.resblock_kernel_sizes)
         self.num_upsamples = len(h.upsample_rates)
-        self.conv_pre = weight_norm(Conv1d(80, h.upsample_initial_channel, 7, 1, padding=3))
+        self.conv_pre = weight_norm(Conv1d(h.num_wv_feat, h.upsample_initial_channel, 7, 1, padding=3))
         resblock = ResBlock1 if h.resblock == '1' else ResBlock2
 
         self.ups = nn.ModuleList()
@@ -104,25 +105,33 @@ class Generator(torch.nn.Module):
         self.cbns=nn.ModuleList()
         self.fcs=nn.ModuleList()
         for i in range(len(self.ups)):
+            
             self.fcs.append(
                 nn.Linear(h.spk_dim+h.noise_dim,128), # Z_CHANNEL=128
             )
             self.cbns.append(
-                ConditionalBatchNorm1d(h.n_feat_dim), #???? 
+                ConditionalBatchNorm1d(256//pow(2,(i))), #???? 
             )
-            
-                
 
     def forward(self, x,spk_emb=None,noise=None):
-        
+        # 需要预训练的说话人
+        import pdb
+
         spk_noise= torch.cat((spk_emb,noise),dim=1) # spk: [bz,192],ns:[bz,dim]
+        # print(x.shape)
+
         x = self.conv_pre(x)
+        # print(x.shape)
+
         for i in range(self.num_upsamples):
+            # print(x.shape)
             x = F.leaky_relu(x, LRELU_SLOPE)
             x = self.ups[i](x)
             
-            z=self.fcs[i](spk_noise)
-            x=self.cbns[i](x,z)
+            z=self.fcs[i](spk_noise) # bs,128
+
+
+            x=self.cbns[i](x,z)# 
             xs = None
             for j in range(self.num_kernels):
                 if xs is None:
@@ -130,6 +139,7 @@ class Generator(torch.nn.Module):
                 else:
                     xs += self.resblocks[i*self.num_kernels+j](x)
             x = xs / self.num_kernels
+        # pdb.set_trace()
         x = F.leaky_relu(x)
         x = self.conv_post(x)
         x = torch.tanh(x)
@@ -186,7 +196,7 @@ class MultiPeriodDiscriminator(torch.nn.Module):
     def __init__(self,hp):
         super(MultiPeriodDiscriminator, self).__init__()
         self.discriminators = nn.ModuleList([
-            DiscriminatorP(prd) for prd in hp.period 
+            DiscriminatorP(prd) for prd in hp.periods 
         ])
 
     def forward(self, y, y_hat):

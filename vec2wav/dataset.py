@@ -8,13 +8,14 @@ from librosa.util import normalize
 from scipy.io.wavfile import read
 from librosa.filters import mel as librosa_mel_fn
 import librosa
-
+import hparams as hp
+from utils import pad_2D_tensor,pad_1D_tensor
 MAX_WAV_VALUE = 32768.0
 
 
 def load_wav(full_path):
     # print(full_path)
-    data, sampling_rate = librosa.load(full_path, sr=22050)
+    data, sampling_rate = librosa.load(full_path, sr=16000)
     # sampling_rate, data = read(full_path)
     return data, sampling_rate
 
@@ -66,7 +67,7 @@ def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin,
     y = y.squeeze(1)
 
     spec = torch.stft(y, n_fft, hop_length=hop_size, win_length=win_size, window=hann_window[str(y.device)],
-                      center=center, pad_mode='reflect', normalized=False, onesided=True)
+                      center=center, pad_mode='reflect', normalized=False, onesided=True,return_complex=False)
 
     spec = torch.sqrt(spec.pow(2).sum(-1) + (1e-9))
 
@@ -76,23 +77,19 @@ def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin,
     return spec
 
 
-def get_dataset_filelist(a):
-    with open(a.input_training_file, 'r', encoding='utf-8') as fi:
-        # training_files = [os.path.join(a.input_wavs_dir, x.split('|')[0] + '.wav')
-        #                   for x in fi.read().split('\n') if len(x) > 0]
+def get_dataset_filelist(input_training_file,input_validation_file):
+    with open(input_training_file, 'r', encoding='utf-8') as fi:
         training_files = [x.split('|')[0] for x in fi.read().split('\n') if len(x) > 0]
 
-    with open(a.input_validation_file, 'r', encoding='utf-8') as fi:
-        # validation_files = [os.path.join(a.input_wavs_dir, x.split('|')[0] + '.wav')
-        #                     for x in fi.read().split('\n') if len(x) > 0]
+    with open(input_validation_file, 'r', encoding='utf-8') as fi:
         validation_files = [x.split('|')[0] for x in fi.read().split('\n') if len(x) > 0]
-        # print(validation_files)
+
     return training_files, validation_files
 
 
 class MelDataset(torch.utils.data.Dataset):
     def __init__(self, training_files, segment_size, n_fft, num_mels,
-                 hop_size, win_size, sampling_rate, fmin, fmax, split=True, shuffle=True, n_cache_reuse=1,
+                 hop_size, win_size, sampling_rate, fmin, fmax, split=False, shuffle=True, n_cache_reuse=1,
                  device=None, fmax_loss=None, fine_tuning=False, base_mels_path=None):
         self.audio_files = training_files
         random.seed(1234)
@@ -116,11 +113,22 @@ class MelDataset(torch.utils.data.Dataset):
         self.base_mels_path = base_mels_path
 
     def __getitem__(self, index):
-
+        
         filename = self.audio_files[index]
+        #line: train/SSB0544/SSB05440252.npy 
+        # print(line)
+        
+        
+        dir_tuple=filename.split('/')
+        #wav_file: /data_mnt/aishell3/train/wav/SSB0544/SSB05440252.wav 
+        wav_file=os.path.join(hp.train_wav_path,dir_tuple[0],'wav',dir_tuple[1],dir_tuple[2][:-4]+'.wav')
+        
+        feat_file=os.path.join(hp.feat_ground_truth,filename)
+        spk= dir_tuple[1]
+
         if self._cache_ref_count == 0:
-            audio, sampling_rate = load_wav(filename)
-            audio = audio / MAX_WAV_VALUE
+            audio, sampling_rate = load_wav(wav_file)
+            # audio = audio / MAX_WAV_VALUE
             if not self.fine_tuning:
                 audio = normalize(audio) * 0.95
             self.cached_wav = audio
@@ -170,7 +178,51 @@ class MelDataset(torch.utils.data.Dataset):
                                    self.sampling_rate, self.hop_size, self.win_size, self.fmin, self.fmax_loss,
                                    center=False)
 
-        return (mel.squeeze(), audio.squeeze(0), filename, mel_loss.squeeze())
+        wav2vec_ft=torch.from_numpy(np.load(feat_file))
+        # wav2vec_ft=wav2vec_ft.permute(0,2,1)# 1,chan,fram
+        spk_emb=torch.load(os.path.join(hp.spk_emb_path,spk+'.pth'))
+
+        return (wav2vec_ft.squeeze(), spk_emb.squeeze().squeeze(),
+                mel.squeeze(), audio.squeeze(0), filename, 
+                mel_loss.squeeze())
 
     def __len__(self):
         return len(self.audio_files)
+
+
+
+def collate_fn_tensor(batch):
+    wav2vec_fts=list()
+    spk_embs=list()
+    mels=list()
+    audios=list()
+    filenames=list()
+    mel_losses=list()
+    for i in range(len(batch)):
+        (wav2vec_ft, spk_emb, mel, audio, filename, mel_loss) = batch[i]
+        wav2vec_fts.append(wav2vec_ft)
+        spk_embs.append(spk_emb)
+        mel=mel.transpose(0,1)
+        mels.append(mel)
+        audios.append(audio)
+        filenames.append(filename)
+        mel_loss=mel_loss.transpose(0,1)
+        mel_losses.append(mel_loss)
+        
+    wav2vec_fts=pad_2D_tensor(wav2vec_fts)
+    wav2vec_fts=wav2vec_fts.permute(0,2,1)
+    mels=pad_2D_tensor(mels)
+
+    spk_embs=torch.stack(spk_embs)
+    audios=pad_1D_tensor(audios)
+    mel_losses=pad_2D_tensor(mel_losses)
+    
+
+    return (
+        wav2vec_fts, 
+        spk_embs,
+        mels, 
+        audios, 
+        filenames, 
+        mel_losses,
+    )
