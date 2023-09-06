@@ -1,6 +1,6 @@
 
 
-# WavThruVec Pytorch (unfinished)
+# WavThruVec Pytorch 
 An Unofficial Implementation of WavThruVec Based on Pytorch.
 
 The original paper is [WavThruVec: Latent speech representation as intermediate features for
@@ -14,7 +14,7 @@ And I add an [ECAPA_TDNN](https://github.com/TaoRuijie/ECAPA-TDNN/tree/main) as 
 
 For other details not mentioned in the paper, I also follow the rad-tts.
 
-
+The Vec2Wav is mostly based on the [hifi-gan](https://github.com/jik876/hifi-gan), and introduce Conditional Batch Normalization to condition the network on the speaker embedding. The upsample rates sequence is (5,4,4,2,2) so the upsampling factor is $\times 320$ (original paper is $\times 640$), in other words, the generated WAVs have a sample rate of 16khz (32khz in original paper),.
 
 #### text2vec training
 ![](./figs/t2v_train.JPG)
@@ -104,7 +104,6 @@ python ./text2vec/train.py --restore_step 10000
 
 ## Todo
 
-* Vec2Wav  (Major task)
 * experiment & Performace 
 * More details for implementation 
 

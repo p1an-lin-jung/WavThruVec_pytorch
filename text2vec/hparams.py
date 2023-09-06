@@ -24,12 +24,12 @@ input_wav= False # Text2vec use [wav2vec 2.0 feature] as ECAPA_TDNN input, while
 max_seq_len = 3000
 
 encoder_dim = 256
-encoder_n_layer = 1 #4
+encoder_n_layer = 4 #4
 encoder_head = 2
 encoder_conv1d_filter_size = 1024
 
 decoder_dim = 256
-decoder_n_layer = 1 #4
+decoder_n_layer = 4 #4
 decoder_head = 2
 decoder_conv1d_filter_size = 1024
 
@@ -42,7 +42,7 @@ dropout = 0.1
 
 # Train data
 run_path='./run'
-log_seed='30_30_spk'
+log_seed='30_30_spk_4fft'
 tensorboard_logs_path=os.path.join(run_path,log_seed,"tb_logs")
 checkpoint_path = os.path.join(run_path,log_seed,"model_new")
 logger_path = os.path.join(run_path,log_seed,"logger")
@@ -69,7 +69,7 @@ clear_Time = 20
 
 
 # LAMB optimizer
-learning_rate = 1e-4
+learning_rate = 0.1
 beta1=0.9
 beta2=0.98
 epsilon=1e-9

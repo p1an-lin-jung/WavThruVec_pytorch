@@ -59,7 +59,7 @@ def synthesis(model, text, wv_feat,alpha=1.0):
 
 
 def get_data():
-    test1 = "铁血共和"
+    test1 = "s铁血共和e"
     test2 = "大埔的中学有什么"
     test3 = "他将体奥动力称为中国体育产业的标王"
     test4 = "黛比需要一个你这样的自然疗愈者"
