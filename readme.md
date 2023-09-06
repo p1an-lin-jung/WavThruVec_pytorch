@@ -14,7 +14,17 @@ And I add an [ECAPA_TDNN](https://github.com/TaoRuijie/ECAPA-TDNN/tree/main) as 
 
 For other details not mentioned in the paper, I also follow the rad-tts.
 
-![](./figs/archi_fig.png)
+
+
+#### text2vec training
+![](./figs/t2v_train.JPG)
+
+#### text2vec inference
+![](./figs/t2v_infer.JPG)
+
+#### vec2wav 
+![](./figs/v2w.JPG)
+
 
 ### Input
 

@@ -23,7 +23,6 @@ from loss import  AttentionBinarizationLoss
 from torch_optimizer import Lamb
 from torch.utils.tensorboard import SummaryWriter
 
-
 val_error_batch_num=0
 
 def prepare_output_folders_and_logger(output_directory):
@@ -82,13 +81,15 @@ def compute_validation_loss(iteration, model, criterion, valset,
                             attention_kl_loss=None,
                             logger=None, train_config=None):
 
+    global val_error_batch_num
     model.eval()
+    
     with torch.no_grad():
         # val_sampler = DistributedSampler(valset) if n_gpus > 1 else None
         val_loader = DataLoader(valset, sampler=None, num_workers=8,
                                 shuffle=False, batch_size=hp.batch_expand_size * hp.batch_size,
                                 pin_memory=False, collate_fn=collate_fn_tensor,drop_last = True)
-
+        print(len(val_loader))
         loss_outputs_full = {}
         val_WVF_loss,val_WVF_postnet_loss=[],[] # WVF-loss and WVF-postnet-loss,not duration-loss
 
@@ -102,34 +103,44 @@ def compute_validation_loss(iteration, model, criterion, valset,
                 if len(in_lens)<hp.batch_size:
                     continue
                 for si in range(hp.batch_size):
-                    # pdb.set_trace()
                     text_len=in_lens[si]
 
                     feat_len=out_lens[si]
                     b=attn_prior[si,:feat_len,:text_len].unsqueeze(0)
-                    try:
+                    # try:
+                    if True:
                         outputs =  model(
-                            feat_target[si][:feat_len].unsqueeze(0),#[1,n-f,768]
                             text[si][:text_len].unsqueeze(0), #[1,n-t]
                             text_pos[si][:text_len].unsqueeze(0),##[1,n-t]
+                            feat_target[si][:feat_len].unsqueeze(0),#[1,n-f,768]
                             in_lens=text_len.unsqueeze(0), #[1]
                             out_lens=feat_len.unsqueeze(0),# [1]
                             WVF_pos=feat_pos[si][:feat_len].unsqueeze(0),#[1,n-f]
                             WVF_max_length=feat_len.item(),
                             attn_prior=b,
                         )
-                    
-
                         
-                        WVF_loss,WVF_postnet_loss = criterion(outputs['feat_output'],
+                        
+                        if feat_target.shape[1]<outputs['feat_output'].shape[1]:
+                            val_error_batch_num+=1
+                            
+                            WVF_loss,WVF_postnet_loss = criterion(
+                                            outputs['feat_output'][0,:feat_target.shape[1],:].unsqueeze(0),# 1,shape,1024
+                                            outputs['feat_postnet_output'][0,:feat_target.shape[1],:].unsqueeze(0),
+                                            feat_target[si].unsqueeze(0),
+                                            # outputs['duration_predictor_output'],
+                                            # outputs['duration']
+                                            )
+                        else:
+                            WVF_loss,WVF_postnet_loss = criterion(outputs['feat_output'],
                                             outputs['feat_postnet_output'],
                                             feat_target[si,:outputs['feat_output'].shape[1],:].unsqueeze(0),
                                             # outputs['duration_predictor_output'],
                                             # outputs['duration']
                                             )
-                    except:
-                        val_error_batch_num+=1
-                        continue
+                    # except:
+                    #     val_error_batch_num+=1
+                    #     continue
                     val_WVF_loss.append(WVF_loss.item())
                     val_WVF_postnet_loss.append(WVF_postnet_loss.item())
         # pdb.set_trace()
@@ -140,6 +151,7 @@ def compute_validation_loss(iteration, model, criterion, valset,
         
         mean_total_loss = mean_WVF_loss+mean_WVF_postnet_loss
         sum_total_loss = sum_WVF_loss+sum_WVF_postnet_loss
+    # pdb.set_trace()
 
     loss_outputs_full['mean_total_loss']= mean_total_loss
     loss_outputs_full['mean_WVF_loss'] = mean_WVF_loss
@@ -164,20 +176,21 @@ def compute_validation_loss(iteration, model, criterion, valset,
         # logger.add_scalar('val/duration_loss', loss_outputs_full['duration_loss'], iteration)
         # logger.add_scalar('val/attn_binarization_loss', loss_outputs_full['attn_binarization_loss'], iteration)
 
-        attn_used = outputs['attn']
-        attn_soft = outputs['attn_soft'] # [bz,1,len_feat,len_text][0,0]->[len_feat,len_text]
-        audioname = os.path.basename(audiopaths[0])
-        if attn_used is not None:
-            logger.add_image(
-                'val/attention_weights (align_soft)',
-                plot_alignment_to_numpy(
-                    attn_soft[0, 0].data.cpu().numpy().T, title=audioname),
-                iteration, dataformats='HWC')
-            logger.add_image(
-                'val/attention_weights_mas (align_hard)',
-                plot_alignment_to_numpy(
-                    attn_used[0, 0].data.cpu().numpy().T, title=audioname),
-                iteration, dataformats='HWC')
+        if outputs is not None:
+            attn_used = outputs['attn']
+            attn_soft = outputs['attn_soft'] # [bz,1,len_feat,len_text][0,0]->[len_feat,len_text]
+            audioname = os.path.basename(audiopaths[0])
+            if attn_used is not None:
+                logger.add_image(
+                    'val/attention_weights (align_soft)',
+                    plot_alignment_to_numpy(
+                        attn_soft[0, 0].data.cpu().numpy().T, title=audioname),
+                    iteration, dataformats='HWC')
+                logger.add_image(
+                    'val/attention_weights_mas (align_hard)',
+                    plot_alignment_to_numpy(
+                        attn_used[0, 0].data.cpu().numpy().T, title=audioname),
+                    iteration, dataformats='HWC')
 
     model.train()
     return loss_outputs_full
@@ -199,10 +212,10 @@ def main(args):
     # Get buffer
     print("Load data to buffer")
     buffer = get_data_to_buffer(hp.train_list)
-    val_buffer=get_data_to_buffer(hp.val_list)
+    # val_buffer=get_data_to_buffer(hp.val_list)
     # Get dataset
     dataset = BufferDataset(buffer)
-    valset = BufferDataset(val_buffer)
+    # valset = BufferDataset(val_buffer)
 
     # Get Training Loader
     training_loader = DataLoader(dataset,
@@ -212,35 +225,46 @@ def main(args):
                                  drop_last=True,
                                  num_workers=8)
 
-    # Optimizer and loss
-    # Note:Change Adam(fastspeech) to Lamb
-    optimizer = Lamb(model.parameters(),
-                    lr=hp.learning_rate,
-                    betas = (hp.beta1, hp.beta2),
-                    eps = hp.epsilon,
-                    weight_decay = hp.weight_decay)
-    scheduled_optim = ScheduledOptim(optimizer,
-                           hp.learning_rate,
-                           hp.n_warm_up_step,
-                           args.restore_step)
+    
 
     text2vec_loss = DNNLoss().to(device)
     attention_kl_loss = AttentionBinarizationLoss()
 
-    print("Defined Optimizer and Loss Function.")
-
+    
+    learning_rate=hp.learning_rate
+    restart_epoch=0
     # Load checkpoint if exists
     try:
         checkpoint = torch.load(os.path.join(
             hp.checkpoint_path, 'checkpoint_%d.pth.tar' % args.restore_step))
         model.load_state_dict(checkpoint['model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
+        learning_rate=checkpoint['learning_rate']
+        restart_epoch=checkpoint['epoch']
         print("\n---Model Restored at Step %d---\n" % args.restore_step)
     except:
         print("\n---Start New Training---\n")
 
         os.makedirs(hp.checkpoint_path,exist_ok=True)
 
+    # Optimizer and loss
+    # Note:Change Adam(fastspeech) to Lamb
+    optimizer = Lamb(model.parameters(),
+                    lr=learning_rate,
+                    betas = (hp.beta1, hp.beta2),
+                    eps = hp.epsilon,
+                    weight_decay = hp.weight_decay)
+    # optimizer = torch.optim.Adam(model.parameters(),
+    #                 lr=learning_rate,
+    #                 betas = (hp.beta1, hp.beta2),
+    #                 eps = hp.epsilon,
+    #                 weight_decay = hp.weight_decay)
+    scheduled_optim = ScheduledOptim(optimizer,
+                           learning_rate,
+                           hp.n_warm_up_step,
+                           args.restore_step)
+    print("Defined Optimizer and Loss Function.")
+    
     # Init logger
     os.makedirs(hp.logger_path,exist_ok=True)
     tensorboard_logger=prepare_output_folders_and_logger(hp.run_path)
@@ -254,26 +278,26 @@ def main(args):
 
     # Training
     model = model.train()
-    iteration = args.restore_step
-    restart_epoch= max(0, iteration // (len(training_loader)*hp.batch_size*hp.batch_expand_size))
+    iteration = args.restore_step+1
     
     error_batch_num=0
-    
+ 
     for epoch in range(restart_epoch,hp.epochs):
         for i, batchs in enumerate(training_loader):
             # real batch start here
             for j, batch in enumerate(batchs):
-
-                start_time = time.perf_counter()
-
+                start_time=time.perf_counter()
+                
                 # Init
                 scheduled_optim.zero_grad()
 
                 # Get Data
+  
                 (wv_feat_target, text,
                  in_lens, out_lens,
                  wv_feat_pos, text_pos, max_wv_feat_len,
                  attn_prior, audiopaths) = parse_data_from_batch(batch)
+ 
 
                 # in rad-tts: binarization_start_iter=6000,kl_loss_start_iter=18000
                 # • [0, 6k): Use A_soft for the alignment matrix.
@@ -282,73 +306,81 @@ def main(args):
                 #
                 # but this model,A_soft must be binarize to A_hard, and fed to the LengthRegulator
                 # so I set binarization_start_iter=0,so that 'binarize' always be True
+ 
 
-                if iteration >= hp.binarization_start_iter:
-                    binarize = True  # binarization training phase
-
-                try:
+                # try:
+                if True:
                     outputs = model(
-                        wv_feat_target,
                         text,
                         text_pos,
+                        wv_feat_target,
                         in_lens,
                         out_lens,
                         WVF_pos=wv_feat_pos,
                         WVF_max_length=max_wv_feat_len,
-                        binarize_attention=binarize,
+                        binarize_attention=True,
                         attn_prior=attn_prior,
                     )
+ 
                 
                 # compute the MSE between: 1. gt-feat and predicated feat
                 #                          2. duration from hard-attn and duration from length_regulator
-                
+ 
                     WVF_loss, WVF_postnet_loss, duration_loss = text2vec_loss(outputs['feat_output'],
                                                                           outputs['feat_postnet_output'],
                                                                           wv_feat_target,
                                                                           outputs['duration_predictor_output'],
                                                                           outputs['duration'])
-                except:
-                    error_batch_num+=1
-                    continue
+                
+                # except:
+                    # error_batch_num+=1
+                    # continue
                     
-                    
-                total_loss = WVF_loss + WVF_postnet_loss + duration_loss
+                total_loss = WVF_loss + WVF_postnet_loss +duration_loss
 
                 w_bin = hp.binarization_loss_weight
-                if iteration >= hp.kl_loss_start_iter:
-                    binarization_loss = attention_kl_loss(
-                        outputs['attn'], outputs['attn_soft'])
-                    total_loss += binarization_loss * w_bin
-                else:
-                    binarization_loss = torch.zeros_like(total_loss)
+               
+  
+                binarization_loss = attention_kl_loss(
+                    outputs['attn'], outputs['attn_soft'])
+                total_loss += binarization_loss * w_bin
+   
 
 
                 # Logger
+
                 t_l = total_loss.item()
                 m_l = WVF_loss.item()
                 m_p_l = WVF_postnet_loss.item()
                 d_l = duration_loss.item()
                 attn_kl_l=binarization_loss.item()
+ 
+
 
                 # log loss
+
+
                 tensorboard_logger.add_scalar('train/total_loss' , t_l, iteration)
                 tensorboard_logger.add_scalar('train/WVF_loss' , m_l, iteration)
                 tensorboard_logger.add_scalar('train/WVF_postnet_loss' , m_p_l, iteration)
                 tensorboard_logger.add_scalar('train/duration_loss' , d_l, iteration)
                 tensorboard_logger.add_scalar('train/attn_binarization_loss' , attn_kl_l, iteration)
                 # Backward
+  
                 total_loss.backward()
-
+  
                 # Clipping gradients to avoid gradient explosion
-                nn.utils.clip_grad_norm_(
-                    model.parameters(), hp.grad_clip_thresh)
-
+                if iteration%10==0:
+                    nn.utils.clip_grad_norm_(
+                        model.parameters(), hp.grad_clip_thresh)
+ 
                 # Update weights
                 if args.frozen_learning_rate:
                     scheduled_optim.step_and_update_lr_frozen(
                         args.learning_rate_frozen)
                 else:
                     scheduled_optim.step_and_update_lr()
+ 
 
                 # Print and save
                 if iteration % hp.log_step == 0:
@@ -356,8 +388,8 @@ def main(args):
 
                     str1 = "Epoch [{}/{}], Step [{}/{}]:".format(
                         epoch + 1, hp.epochs, iteration, total_step)
-                    str2 = "W2V Feat Loss: {:.4f}, W2V Feat PostNet Loss: {:.4f}, Duration Loss: {:.4f};".format(
-                        m_l, m_p_l, d_l)
+                    str2 = "W2V Feat Loss: {:.4f}, W2V Feat PostNet Loss: {:.4f},attn_binarization_loss:{:.4f};".format(
+                        m_l, m_p_l,attn_kl_l)
                     str3 = "Current Learning Rate is {:.6f}.".format(
                         scheduled_optim.get_learning_rate())
                     str4 = "Time Used: {:.3f}s, Estimated Time Remaining: {:.3f}s.".format(
@@ -388,22 +420,24 @@ def main(args):
                         plot_alignment_to_numpy(
                             outputs['attn'][0, 0].data.cpu().numpy().T, title=audioname),
                         iteration, dataformats='HWC')
+ 
 
 
                 if iteration % hp.save_step == 0:
                     torch.save({'model': model.state_dict(), 
                                 'optimizer': optimizer.state_dict(),
                                 'learning_rate': scheduled_optim.get_learning_rate(),
+                                'epoch': epoch
                                 }, os.path.join(hp.checkpoint_path, 'checkpoint_%d.pth.tar' % iteration))
                     print("save model at step %d ..." % iteration)
 
                 # val
-                if iteration % hp.val_step == 0:
-                    val_loss_outputs = compute_validation_loss(
-                            iteration, model, text2vec_loss, valset,
-                            attention_kl_loss=attention_kl_loss,
-                            logger=tensorboard_logger)
-                    print('Validation loss:', val_loss_outputs)
+                # if iteration % hp.val_step == 0:
+                #     val_loss_outputs = compute_validation_loss(
+                #             iteration, model, text2vec_loss, valset,
+                #             attention_kl_loss=attention_kl_loss,
+                #             logger=tensorboard_logger)
+                #     print('Validation loss:', val_loss_outputs)
 
                 end_time = time.perf_counter()
                 Time = np.append(Time, end_time - start_time)
@@ -412,12 +446,14 @@ def main(args):
                     Time = np.delete(
                         Time, [i for i in range(len(Time))], axis=None)
                     Time = np.append(Time, temp_value)
-
+                
                 iteration+=1
     
+    global val_error_batch_num
     with open(os.path.join(hp.logger_path, "error_num.txt"), "a") as f_logger:
-        f_logger.write(error_batch_num)
-        f_logger.write(val_error_batch_num)
+        print(error_batch_num,file=f_logger)
+        print(val_error_batch_num,file=f_logger)
+
         
 
 

@@ -95,6 +95,7 @@ class Encoder(nn.Module):
 
         if hp.use_multi_speaker_condition:
             self.speaker_encoder=ECAPA_TDNN(hp.spk_channel,input_wav=hp.input_wav,n_feat_dim=hp.n_feat_dim)
+            # self.speaker_encoder= torch.nn.Embedding(hp.n_speakers, hp.n_speaker_dim)
             d_model+=hp.n_speaker_dim
 
         d_k=d_model // hp.encoder_head
@@ -102,7 +103,7 @@ class Encoder(nn.Module):
         self.layer_stack = nn.ModuleList([FFTBlock(
             d_model, d_inner, n_head, d_k, d_v, dropout=dropout) for _ in range(n_layers)])
 
-    def forward(self, src_seq, src_pos, wav_feat,return_attns=False):
+    def forward(self, src_seq, src_pos, wav_feat=None,return_attns=False):
 
 
         enc_slf_attn_list = []
@@ -121,7 +122,8 @@ class Encoder(nn.Module):
             spk_emb_repeat=spk_emb.unsqueeze(1)## [batch_sz,1,192]
             spk_emb_repeat = spk_emb_repeat.repeat(1, enc_output.size(1), 1)# [bsz,src_seq_len,192]
             enc_output=torch.cat((enc_output,spk_emb_repeat),dim=2)# [bsz,src_seq_len,text_dim+spk_dim(192+256=448)]
-
+        else:
+            spk_emb=None
 
         for enc_layer in self.layer_stack:
             enc_output, enc_slf_attn = enc_layer(
@@ -173,6 +175,7 @@ class Decoder(nn.Module):
         non_pad_mask = get_non_pad_mask(enc_pos)
 
         # -- Forward
+        # pdb.set_trace()
         dec_output = enc_seq + self.position_enc(enc_pos) #([16, 431, 448])
 
         for dec_layer in self.layer_stack:
@@ -185,6 +188,7 @@ class Decoder(nn.Module):
                 dec_slf_attn_list += [dec_slf_attn]
 
         return dec_output
+
 
 
 class Text2Vec(nn.Module):
@@ -251,13 +255,13 @@ class Text2Vec(nn.Module):
     def get_attn_and_duration(self,
                               wav_feat,
                               in_lens,out_lens,
-                              text_embeddings,
+                              encoder_output,
                               speaker_vecs,attn_prior,
                               binarize_attention=True):
         # ====ref to rad-tts
 
-        # text_embeddings: b x len_text x n_text_dim [512, 125]
-        text_embeddings = text_embeddings.transpose(1, 2)
+        # encoder_output: b x len_text x n_text_dim [batch,n_, 256]
+        encoder_output = encoder_output.transpose(1, 2)
         attn = None
         attn_soft = None
         attn_hard = None
@@ -265,16 +269,16 @@ class Text2Vec(nn.Module):
         attn_mask = get_mask_from_lengths(in_lens)[..., None] == 0
 
 
-        text_embeddings_for_attn = text_embeddings
+        encoder_output_for_attn = encoder_output
         if self.use_speaker_emb_for_alignment:
             speaker_vecs_expd = speaker_vecs[:, :, None].expand(
-                -1, -1, text_embeddings.shape[2])
-            text_embeddings_for_attn = torch.cat(
-                (text_embeddings_for_attn, speaker_vecs_expd.detach()), 1)
+                -1, -1, encoder_output.shape[2])
+            encoder_output = torch.cat(
+                (encoder_output_for_attn, speaker_vecs_expd.detach()), 1)
 
         attn_soft, attn_logprob = self.attention(
             wav_feat.transpose(1,2), # switch  frame-dim and channel-dim
-            text_embeddings_for_attn,
+            encoder_output_for_attn,
             out_lens,
             attn_mask,
             key_lens=in_lens, attn_prior=attn_prior)
@@ -290,27 +294,30 @@ class Text2Vec(nn.Module):
         return attn,attn_soft,duration
 
 
-    def forward(self, wav_feat,src_seq, src_pos,in_lens=None, out_lens=None
+    def forward(self, src_seq, src_pos,wav_feat,in_lens, out_lens
                 ,WVF_pos=None, WVF_max_length=None, alpha=1.0,
-                binarize_attention=True,attn_prior=None):
-
-        encoder_output, _,text_embeddings,speaker_vecs = self.encoder(src_seq, src_pos,wav_feat)
+                binarize_attention=True,attn_prior=None,time_dict=None):
+        
+        if hp.use_multi_speaker_condition:
+            encoder_output, _,text_embeddings,speaker_vecs = self.encoder(src_seq, src_pos,wav_feat)
+        else:
+            encoder_output, _,text_embeddings,speaker_vecs = self.encoder(src_seq, src_pos)
 
         # train soft-alignment,and convert to hard-alignment and duration(as length_regulator's target)
-        try:
-            attn_hard,attn_soft,duration=self.get_attn_and_duration(wav_feat,
-                                   in_lens,
-                                   out_lens,
-                                   text_embeddings,
-                                   speaker_vecs,
-                                   attn_prior,
-                                   binarize_attention=binarize_attention)
-        except:
-            pdb.set_trace()
+
         if self.training:
+            attn_hard,attn_soft,duration=self.get_attn_and_duration(wav_feat,
+                                    in_lens,
+                                    out_lens,
+                                    encoder_output,
+                                    speaker_vecs,
+                                    attn_prior,
+                                    binarize_attention=binarize_attention)
+
             length_regulator_output, duration_predictor_output = self.length_regulator(encoder_output,
                                                                                        attn=attn_hard,
                                                                                        WVF_max_length=WVF_max_length)
+
 
             decoder_output = self.decoder(length_regulator_output, WVF_pos) #torch.Size([16, 431, 448])
             WVF_output = self.WVF_linear(decoder_output)
@@ -321,7 +328,6 @@ class Text2Vec(nn.Module):
             WVF_postnet_output = self.mask_tensor(WVF_postnet_output,
                                                   WVF_pos,
                                                   WVF_max_length)
-
             output={
                 'feat_output':WVF_output,
                 'feat_postnet_output':WVF_postnet_output,
@@ -345,10 +351,7 @@ class Text2Vec(nn.Module):
             output = {
                 'feat_output': WVF_output,
                 'feat_postnet_output': WVF_postnet_output,
-                # 'duration_predictor_output': duration_predictor_output,
-                'duration': duration,
-                'attn': attn_hard,
-                'attn_soft': attn_soft
+                'duration_predictor_output':length_regulator_output
             }
             return output
 

@@ -7,7 +7,6 @@ import math
 import time
 import os
 
-
 from utils import process_text, pad_1D, pad_2D
 from utils import pad_1D_tensor, pad_2D_tensor
 from text import text_to_sequence
@@ -55,22 +54,18 @@ def get_attention_prior(n_tokens, n_frames):
 
     return attn_prior
 
-
-
 def process_text(text_path):
     with open(text_path, "r", encoding="utf-8") as f:
         txt = []
         for line in f.readlines():
             txt.append(line)
-        return txt
+        return txt#[:500]
 
 def get_data_to_buffer(file_list):
     """
         file_list[i] format:
             example.npy|the text.|spk_id
     """
-    
-
     buffer = list()
     text=[]
     for file_path in file_list:
@@ -102,9 +97,6 @@ def get_data_to_buffer(file_list):
                        "audiopath":feat_gt_name,
                        "attn_prior":attn_prior
         })
-
-
-
     end = time.perf_counter()
     print("cost {:.2f}s to load all data into buffer.".format(end - start))
 

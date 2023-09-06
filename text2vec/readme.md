@@ -87,11 +87,10 @@ The role of the second-stage component is to generate an audio waveform conditio
 
 Vec2wav is a Generative Adversarial Network,based on the HiFi-GAN [13], consisting of a fully convolutional
 generator and several sub-discriminators.
+**vec2wav 是生成对抗网络，基于hifi-gan，包括了一系列的全卷积生成器核几个子判别器**
 
 
-
-The generator upsamples input features through the sequence of transposed convolutions followed by residual blocks of dilated convolutions. Similarly to [21], we introduce Conditional Batch Normalization to
-condition the network on the speaker embedding between the residual blocks at different temporal resolutions. 
+The generator upsamples input features through the sequence of transposed convolutions followed by residual blocks of dilated convolutions. Similarly to [21], we introduce Conditional Batch Normalization to condition the network on the speaker embedding between the residual blocks at different temporal resolutions. 
 **生成器对输入的feat上采样，上采样模块使用【21】，即gan-tts里的CBN，整合spk embedding**
 
 Each Conditional Batch Normalization is preceded by a linear network that
@@ -104,7 +103,6 @@ compared to 256x of original HiFi-GAN. Therefore the configuration of the genera
 sequence of (5, 4, 4, 2, 2, 2) with corresponding kernel sizes(11, 8, 8, 4, 4, 4), while the hyper-parameters of residual blocks
 are the same as in HiFi-GAN V1. 
 **生成的语音，采样率在32k，用640*的上采样因子，将50hz分辨率的input feat采样到32k。**
-
 
 
 Additional multi-period sub-discriminators are added with periods of [13, 17, 19] to obtain

@@ -61,11 +61,10 @@ class LengthRegulator(nn.Module):
         self.duration_predictor = DurationPredictor()
 
     def LR(self, x, attn_hard=None,duration_predictor_output=None,WVF_max_length=None):
+ 
 
-
+        # training：
         if attn_hard is None:
-            duration_predictor_output
-
             expand_max_len = torch.max(
                 torch.sum(duration_predictor_output, -1), -1)[0]#### todo check
             alignment = torch.zeros(duration_predictor_output.size(0),
@@ -75,11 +74,11 @@ class LengthRegulator(nn.Module):
             alignment = create_alignment(alignment,
                                          duration_predictor_output.cpu().detach().numpy())
             alignment = torch.from_numpy(alignment).to(device)
+        # inference：
         else:
             alignment = attn_hard.squeeze()  # [batch_sz,1,len_feat,len_text]->[batch_sz, len_feat,len_text]
-        # pdb.set_trace()
 
-        output = alignment @ x
+        output = alignment @ x  # alig：16,n_fr，28 x：16,28,256-> 16,n_fr,256
         if WVF_max_length:
             output = F.pad(
                 output, (0, 0, 0, WVF_max_length-output.size(1), 0, 0))
@@ -88,7 +87,6 @@ class LengthRegulator(nn.Module):
     def forward(self, x, alpha=1.0,target=None, attn=None,WVF_max_length=None):
 
         duration_predictor_output = self.duration_predictor(x) # infer:[n] val:[bz,n]
-        # pdb.set_trace()
 
         # train stage
         if attn is not None:
@@ -98,16 +96,13 @@ class LengthRegulator(nn.Module):
             #  infer and val stage
             duration_predictor_output = (
                 (duration_predictor_output + 0.5) * alpha).int() # 做四舍五入
-
+            print(duration_predictor_output)
             output = self.LR(x, duration_predictor_output=duration_predictor_output)
 
             # if len(output.shape)==2: # if single-infer , output.shape=[bz,n_text] todo
             WVF_pos = torch.stack(
                 [torch.Tensor([i+1 for i in range(output.shape[1])])]).long().to(device) # [1,n_text]
-            # else:                     # if batch-val , output.shape=[bz,n_text,n_WVF]
-            #     pdb.set_trace()
-            #     WVF_pos = torch.Tensor([
-            #         [i + 1 for i in range(output.shape[1])] for j in range(output.shape[0])]).long().to(device)# [bsz,n_text]
+            
             return output, WVF_pos
 
 
@@ -147,6 +142,7 @@ class DurationPredictor(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self, encoder_output):
+        # pdb.set_trace()
         out = self.conv_layer(encoder_output)
         out = self.linear_layer(out)
         out = self.relu(out)
@@ -156,7 +152,6 @@ class DurationPredictor(nn.Module):
         if not self.training:
             # val:[bz,n], same as training
             # infer: [n]->[1,n];
-            # if len(out.shape)==1:
             out = out.unsqueeze(0)
         return out
 

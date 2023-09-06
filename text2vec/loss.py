@@ -9,6 +9,8 @@ class AttentionBinarizationLoss(torch.nn.Module):
         super(AttentionBinarizationLoss, self).__init__()
 
     def forward(self, hard_attention, soft_attention):
+        # pdb.set_trace()
+
         log_sum = torch.log(soft_attention[hard_attention == 1]).sum()
         return -log_sum / hard_attention.sum()
 
